@@ -87,7 +87,7 @@ function formatUptime(startedAt) {
 }
 
 function setRunningBadge(running) {
-  runningBadge.textContent = running ? 'RUNNING' : 'STOPPED';
+  runningBadge.textContent = running ? 'Running' : 'Stopped';
   runningBadge.classList.toggle('running', running);
   runningBadge.classList.toggle('stopped', !running);
 }

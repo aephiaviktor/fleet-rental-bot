@@ -56,7 +56,13 @@ textarea { resize: vertical; }
 
 .app-main { padding: 16px 8px 16px 16px; }
 .app { max-width: none; margin: 0; }
-.app-header { margin-bottom: 18px; }
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
 .app-header h1 { margin: 0; font-size: 2rem; }
 
 .panel, .status-panel {
@@ -263,25 +269,34 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
   align-items: center;
   gap: 0.5rem;
 }
-.running-badge {
+.running-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 74px;
-  height: 24px;
+  min-width: 70px;
+  padding: 4px 9px;
   border: 1px solid rgba(148, 163, 184, 0.55);
   border-radius: 999px;
   background: rgba(51, 65, 85, 0.8);
   color: #cbd5e1;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
-.running-badge.running {
+.running-pill.running {
   border-color: rgba(52, 211, 153, 0.62);
   background: linear-gradient(180deg, rgba(21, 128, 61, 0.7), rgba(20, 83, 45, 0.76));
   color: #d1fae5;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 16px rgba(52, 211, 153, 0.12);
+}
+.running-pill.stopped {
+  color: #dbeaff;
+  background: rgba(17, 39, 75, 0.8);
+  border-color: rgba(143, 193, 255, 0.18);
+}
+.app-header .running-pill {
+  margin-top: 4px;
 }
 .rail-update-btn {
   padding: 0.35rem 0.65rem;
