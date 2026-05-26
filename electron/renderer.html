@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title></title>
+    <link rel="stylesheet" href="./renderer.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <main class="app-main">
+        <div class="app">
+          <div class="app-header">
+            <h1>Fleet Rental Bot</h1>
+            <p id="status">Status: stopped</p>
+          </div>
+
+          <section class="panel app-panel">
+            <div class="tabs" role="tablist" aria-label="Configuration tabs">
+              <button class="tab-button active" id="tab-rental-rules" type="button" data-tab="rental-rules" role="tab" aria-selected="true">
+                Rental Rules
+              </button>
+              <button class="tab-button" id="tab-setup" type="button" data-tab="setup" role="tab" aria-selected="false">
+                Setup
+              </button>
+            </div>
+
+            <form id="config-form" class="config-shell sensitive-hidden">
+              <section class="tab-panel active" data-panel="rental-rules" role="tabpanel" aria-labelledby="tab-rental-rules">
+                <div class="panel-toolbar">
+                  <h2>Rental Rules</h2>
+                  <p>Renew listed fleets when their current rent is ending and the contract price is within your limit.</p>
+                </div>
+
+                <div class="rules-table-scroll">
+                  <div class="rules-table-wrap">
+                    <table class="rules-table">
+                      <thead>
+                        <tr>
+                          <th>Enabled</th>
+                          <th class="fleet-name-col">Fleet Name</th>
+                          <th>Fleet Account</th>
+                          <th>Rental Contract</th>
+                          <th class="rental-end-col">Current Rental End</th>
+                          <th>Duration days</th>
+                          <th class="max-price-col">Max ATLAS/day</th>
+                          <th class="comment-col">Comment</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody id="rental-rules-body"></tbody>
+                      <tfoot>
+                        <tr>
+                          <td colspan="8"></td>
+                          <td class="remove-cell add-row-cell">
+                            <button id="add-rule-row-btn" type="button">+ Add Row</button>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              </section>
+
+              <section class="tab-panel" data-panel="setup" role="tabpanel" aria-labelledby="tab-setup">
+                <div class="panel-toolbar">
+                  <h2>Setup</h2>
+                  <button id="toggle-sensitive-btn" type="button">Show Sensitive Fields</button>
+                </div>
+
+                <div class="display-account-grid">
+                  <div class="display-account">
+                    <span>Hot Wallet Address</span>
+                    <strong id="display-hot-wallet-address">—</strong>
+                  </div>
+                  <div class="display-account">
+                    <span>Managed / Asset Owner Wallet</span>
+                    <strong id="display-managed-wallet">—</strong>
+                  </div>
+                  <div class="display-account">
+                    <span>Managed Player Profile</span>
+                    <strong id="display-managed-player-profile">—</strong>
+                  </div>
+                </div>
+
+                <div class="config-grid">
+                  <label>
+                    Active Profile
+                    <input name="INSTANCE_NAME" type="text" autocomplete="off" placeholder="e.g. PROFILE_NAME" readonly />
+                  </label>
+                  <label>
+                    Aephia API Key
+                    <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" />
+                  </label>
+                  <label>
+                    RPC URL
+                    <input class="sensitive-field" name="RPC_URL" type="text" autocomplete="off" />
+                  </label>
+                  <label>
+                    Hot Wallet Secret
+                    <textarea class="sensitive-field" name="HOT_WALLET_SECRET" rows="3"></textarea>
+                  </label>
+                  <label>
+                    Managed / Asset Owner Wallet
+                    <input class="sensitive-field" name="OWNER_WALLET" type="text" autocomplete="off" />
+                  </label>
+                  <label>
+                    Managed Player Profile
+                    <input class="sensitive-field" name="OWNER_PROFILE" type="text" autocomplete="off" />
+                  </label>
+                  <label>
+                    Aggressive Start Before End Seconds
+                    <input name="AGGRESSIVE_START_BEFORE_END_SECONDS" type="number" min="0" step="0.1" autocomplete="off" />
+                  </label>
+                  <label>
+                    Aggressive Stop After End Seconds
+                    <input name="AGGRESSIVE_STOP_AFTER_END_SECONDS" type="number" min="0" step="0.1" autocomplete="off" />
+                  </label>
+                  <section class="config-section transaction-section">
+                    <label class="checkbox-row">
+                      <input name="USE_HELIUS_SENDER" type="checkbox" />
+                      <span>
+                        Use Helius Sender
+                        <small>Optimized landing endpoint for time-sensitive transactions. When disabled, the bot uses normal RPC sends.</small>
+                      </span>
+                    </label>
+                    <label>
+                      Aggressive Send Interval ms
+                      <input name="AGGRESSIVE_SEND_INTERVAL_MS" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      Fallback Priority Fee microLamports/CU
+                      <input name="TRANSACTION_PRIORITY_FEE_MICROLAMPORTS" type="number" min="1" step="1" autocomplete="off" />
+                    </label>
+                    <label>
+                      Priority Fee Max microLamports/CU
+                      <input name="HELIUS_PRIORITY_FEE_MAX_MICROLAMPORTS" type="number" min="1" step="1" autocomplete="off" />
+                    </label>
+                    <label>
+                      Sender Tip SOL
+                      <input name="HELIUS_SENDER_TIP_SOL" type="number" min="0.0002" step="0.000001" autocomplete="off" />
+                    </label>
+                  </section>
+                </div>
+
+                <div class="panel setup-logs-panel">
+                  <h2>Logs</h2>
+                  <pre id="logs"></pre>
+                </div>
+              </section>
+            </form>
+
+            <div class="actions">
+              <button id="save-btn" type="button">Save Settings</button>
+              <button id="start-btn" type="button">Start Bot</button>
+              <button id="stop-btn" type="button">Stop Bot</button>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <aside class="status-rail">
+        <div class="status-rail-inner">
+          <section class="status-panel status-panel-header">
+            <div class="status-header-row">
+              <h2>Status</h2>
+              <button class="rail-update-btn" id="update-btn" type="button">Update</button>
+            </div>
+            <div id="status-summary" class="status-summary muted">No status yet.</div>
+          </section>
+
+          <section class="status-panel">
+            <h2>Rule Health</h2>
+            <div id="rule-health" class="rule-health-list muted">No rules.</div>
+          </section>
+
+          <section class="status-panel">
+            <h2>Recent Activity</h2>
+            <div id="recent-activity" class="activity-list muted">No activity.</div>
+          </section>
+        </div>
+      </aside>
+    </div>
+
+    <div class="modal-backdrop" id="update-modal" hidden>
+      <section class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+        <h2 id="update-dialog-title">Fleet Rental Bot Update</h2>
+        <div class="update-version-grid">
+          <span>Current version</span>
+          <strong id="update-current-version">Checking...</strong>
+          <span>Latest GitHub version</span>
+          <strong id="update-latest-version">Checking...</strong>
+        </div>
+        <p class="update-message" id="update-message">Checking GitHub for the latest version...</p>
+        <div class="update-dialog-actions">
+          <button id="update-confirm-btn" type="button" disabled>Update</button>
+          <button id="update-cancel-btn" type="button">Cancel</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

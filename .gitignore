@@ -1,0 +1,31 @@
+node_modules/
+dist/
+
+# Runtime data and local profiles
+analysis/
+*-analysis/
+*.log
+*.jsonl
+*.bak
+*.bak-*
+*.patch
+
+# Local secrets and machine-specific settings
+.env
+.env.*
+settings.json
+profiles/
+
+# Electron/package outputs
+release/
+out/
+build/
+
+# Local/profile-specific icon variants
+assets/fleet-rental-bot-mud.*
+assets/fleet-rental-bot-ustur.*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp

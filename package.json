@@ -1,0 +1,30 @@
+{
+  "name": "fleet-rental-bot",
+  "version": "0.1.14",
+  "private": true,
+  "main": "electron/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron .",
+    "dev:cli": "ts-node src/index.ts",
+    "start:electron": "npm run build && electron .",
+    "dev": "npm run start:electron"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.0",
+    "@staratlas/anchor": "^0.25.1",
+    "@staratlas/sage": "^1.8.6",
+    "bn.js": "^5.2.1",
+    "bs58": "^6.0.0",
+    "electron": "^42.1.0"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2"
+  }
+}
