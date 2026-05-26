@@ -58,7 +58,6 @@ textarea { resize: vertical; }
 .app { max-width: none; margin: 0; }
 .app-header { margin-bottom: 18px; }
 .app-header h1 { margin: 0; font-size: 2rem; }
-.app-header p { margin: 0.4rem 0 0; color: var(--muted); }
 
 .panel, .status-panel {
   border: 1px solid var(--border);
@@ -259,6 +258,31 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
   margin-bottom: 0.75rem;
 }
 .status-header-row h2 { margin: 0; }
+.status-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.running-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 74px;
+  height: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  border-radius: 999px;
+  background: rgba(51, 65, 85, 0.8);
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.running-badge.running {
+  border-color: rgba(52, 211, 153, 0.62);
+  background: linear-gradient(180deg, rgba(21, 128, 61, 0.7), rgba(20, 83, 45, 0.76));
+  color: #d1fae5;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 16px rgba(52, 211, 153, 0.12);
+}
 .rail-update-btn {
   padding: 0.35rem 0.65rem;
   border-radius: 999px;
@@ -273,6 +297,12 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
   display: grid;
   gap: 0.45rem;
   font-size: 0.9rem;
+}
+.status-runtime-line {
+  margin-bottom: 0.65rem;
+  color: #9bd0ff;
+  font-size: 0.85rem;
+  font-weight: 700;
 }
 .status-row {
   display: flex;

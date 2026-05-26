@@ -1,5 +1,4 @@
 const form = document.getElementById('config-form');
-const statusEl = document.getElementById('status');
 const logsEl = document.getElementById('logs');
 const rentalRulesBody = document.getElementById('rental-rules-body');
 const addRuleRowBtn = document.getElementById('add-rule-row-btn');
@@ -10,6 +9,7 @@ const toggleSensitiveBtn = document.getElementById('toggle-sensitive-btn');
 const statusSummary = document.getElementById('status-summary');
 const ruleHealth = document.getElementById('rule-health');
 const recentActivity = document.getElementById('recent-activity');
+const runningBadge = document.getElementById('running-badge');
 const displayHotWalletAddress = document.getElementById('display-hot-wallet-address');
 const displayManagedWallet = document.getElementById('display-managed-wallet');
 const displayManagedPlayerProfile = document.getElementById('display-managed-player-profile');
@@ -67,6 +67,29 @@ function escapeHtml(value) {
 function shortKey(value) {
   const text = String(value ?? '');
   return text.length > 14 ? `${text.slice(0, 6)}…${text.slice(-6)}` : text;
+}
+
+function formatUptime(startedAt) {
+  if (!startedAt) return 'Not running';
+  const startedMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedMs)) return 'Running';
+
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) return `Running for ${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `Running for ${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `Running for ${minutes}m ${seconds}s`;
+  return `Running for ${seconds}s`;
+}
+
+function setRunningBadge(running) {
+  runningBadge.textContent = running ? 'RUNNING' : 'STOPPED';
+  runningBadge.classList.toggle('running', running);
+  runningBadge.classList.toggle('stopped', !running);
 }
 
 function appendLog(payload) {
@@ -390,9 +413,11 @@ async function saveSettings() {
 }
 
 function renderSummary(snapshot) {
-  statusEl.textContent = `Status: ${snapshot.running ? 'running' : 'stopped'}`;
+  setRunningBadge(Boolean(snapshot.running));
+  const runtimeText = snapshot.running ? formatUptime(snapshot.startedAt) : 'Stopped';
   statusSummary.classList.remove('muted');
   statusSummary.innerHTML = `
+    <div class="status-runtime-line">${escapeHtml(runtimeText)} | v${escapeHtml(appVersion)}</div>
     <div class="status-grid">
       <div class="status-row"><span>Hot Wallet</span><span title="${escapeHtml(snapshot.wallet)}">${escapeHtml(shortKey(snapshot.wallet))}</span></div>
       <div class="status-row"><span>Managed Wallet</span><span title="${escapeHtml(snapshot.ownerWallet)}">${escapeHtml(shortKey(snapshot.ownerWallet))}</span></div>
@@ -470,7 +495,7 @@ async function refreshStatus() {
 }
 
 function setRunningUi(running) {
-  statusEl.textContent = `Status: ${running ? 'running' : 'stopped'}`;
+  setRunningBadge(running);
   startBtn.disabled = running;
   stopBtn.disabled = !running;
 }
