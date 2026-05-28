@@ -53,7 +53,7 @@ let availableUpdate = null;
 let updateCheckInFlight = false;
 let updateCheckPromise = null;
 const GENERAL_CHECK_INTERVAL_MS = 3600 * 1000;
-const RULE_RESOLVE_RETRY_MS = 5 * 1000;
+const RULE_RESOLVE_RETRY_MS = 5 * 60 * 1000;
 const ruleResolveRetryTimers = new WeakMap();
 let ruleResolveQueue = Promise.resolve();
 
@@ -69,6 +69,14 @@ function escapeHtml(value) {
 function shortKey(value) {
   const text = String(value ?? '');
   return text.length > 14 ? `${text.slice(0, 6)}…${text.slice(-6)}` : text;
+}
+
+function formatRetryDelay(ms) {
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  if (totalSeconds >= 60 && totalSeconds % 60 === 0) {
+    return `${totalSeconds / 60}m`;
+  }
+  return `${totalSeconds}s`;
 }
 
 function formatUptime(startedAt) {
@@ -227,7 +235,7 @@ function scheduleRuleResolveRetry(tr, message) {
 
   const hint = tr.querySelector('[data-field="resolveHint"]');
   if (hint) {
-    hint.textContent = `${message} · retrying in ${Math.round(RULE_RESOLVE_RETRY_MS / 1000)}s`;
+    hint.textContent = `${message} · retrying in ${formatRetryDelay(RULE_RESOLVE_RETRY_MS)}`;
   }
 }
 
