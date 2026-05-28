@@ -489,6 +489,7 @@ function getEmptyStatusSnapshot() {
     srslyProgramId: '—',
     dryRun: true,
     solBalance: null,
+    atlasBalance: null,
     startedAt: null,
     lastCycleStartedAt: null,
     lastCycleCompletedAt: null,

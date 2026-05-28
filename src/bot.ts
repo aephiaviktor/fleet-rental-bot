@@ -189,6 +189,7 @@ export type FleetRentalBotStatus = {
   srslyProgramId: string;
   dryRun: boolean;
   solBalance: number | null;
+  atlasBalance: number | null;
   startedAt: string | null;
   lastCycleStartedAt: string | null;
   lastCycleCompletedAt: string | null;
@@ -811,6 +812,7 @@ export class FleetRentalBot {
   private lastCycleCompletedAt: string | null = null;
   private lastCycleDurationMs: number | null = null;
   private solBalanceCache: number | null = null;
+  private atlasBalanceCache: number | null = null;
   private srslyProgram: Program | null = null;
   private readonly successfulRentKeys = new Set<string>();
   private readonly aggressiveStartTimers = new Map<string, NodeJS.Timeout>();
@@ -892,7 +894,7 @@ export class FleetRentalBot {
   }
 
   async getStatusSnapshot(): Promise<FleetRentalBotStatus> {
-    const solBalance = await this.getSolBalance();
+    const [solBalance, atlasBalance] = await Promise.all([this.getSolBalance(), this.getAtlasBalance()]);
     const ruleHealth = this.config.rentalRules.map((rule) => this.buildRuleHealth(rule));
     const recentActivity = await this.readRecentActivity();
     return {
@@ -903,6 +905,7 @@ export class FleetRentalBot {
       srslyProgramId: this.config.srslyProgramId,
       dryRun: this.config.dryRun,
       solBalance,
+      atlasBalance,
       startedAt: this.startedAt,
       lastCycleStartedAt: this.lastCycleStartedAt,
       lastCycleCompletedAt: this.lastCycleCompletedAt,
@@ -1584,6 +1587,7 @@ export class FleetRentalBot {
     const { signature, blockhash, lastValidBlockHeight } = await this.signAndSubmit(transaction, 0);
     const result = await this.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
     this.solBalanceCache = null;
+    this.atlasBalanceCache = null;
     if (result.value.err) {
       throw new Error(`Transaction failed: ${JSON.stringify(result.value.err)} (${signature})`);
     }
@@ -1779,6 +1783,24 @@ export class FleetRentalBot {
       return this.solBalanceCache;
     } catch (err) {
       this.logger.warn('Failed to fetch SOL balance', err);
+      return null;
+    }
+  }
+
+  private async getAtlasBalance(): Promise<number | null> {
+    if (this.atlasBalanceCache != null) return this.atlasBalanceCache;
+    try {
+      const tokenAccount = getAssociatedTokenAddressSync(new PublicKey(ATLAS_MINT), this.wallet.publicKey);
+      const balance = await this.connection.getTokenAccountBalance(tokenAccount, 'confirmed');
+      this.atlasBalanceCache = Number(balance.value.amount) / 10 ** LAMPORTS_PER_ATLAS_DECIMALS;
+      return this.atlasBalanceCache;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/could not find account|invalid account owner|failed to get token account balance/i.test(message)) {
+        this.atlasBalanceCache = 0;
+        return this.atlasBalanceCache;
+      }
+      this.logger.warn('Failed to fetch ATLAS balance', err);
       return null;
     }
   }

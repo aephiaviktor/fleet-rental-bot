@@ -425,6 +425,7 @@ function renderSummary(snapshot) {
       <div class="status-row"><span>Managed Wallet</span><span title="${escapeHtml(snapshot.ownerWallet)}">${escapeHtml(shortKey(snapshot.ownerWallet))}</span></div>
       <div class="status-row"><span>Managed Profile</span><span title="${escapeHtml(snapshot.ownerProfile)}">${escapeHtml(shortKey(snapshot.ownerProfile))}</span></div>
       <div class="status-row"><span>SOL</span><span>${snapshot.solBalance == null ? '—' : snapshot.solBalance.toFixed(4)}</span></div>
+      <div class="status-row"><span>ATLAS</span><span>${snapshot.atlasBalance == null ? '—' : snapshot.atlasBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
       <div class="status-row"><span>Rules</span><span>${snapshot.activeRuleCount ?? 0}</span></div>
       <div class="status-row"><span>Last Cycle</span><span>${escapeHtml(snapshot.lastCycleCompletedAt ?? '—')}</span></div>
     </div>
