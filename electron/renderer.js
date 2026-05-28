@@ -20,6 +20,8 @@ const updateLatestVersionEl = document.getElementById('update-latest-version');
 const updateMessageEl = document.getElementById('update-message');
 const updateConfirmBtn = document.getElementById('update-confirm-btn');
 const updateCancelBtn = document.getElementById('update-cancel-btn');
+const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
+const tabPanels = Array.from(document.querySelectorAll('.tab-panel'));
 
 const CONFIG_KEYS = [
   'INSTANCE_NAME',
@@ -500,15 +502,28 @@ function setRunningUi(running) {
   stopBtn.disabled = !running;
 }
 
+function setActiveTab(tabName) {
+  const nextTab = tabName === 'setup' ? 'setup' : 'rental-rules';
+
+  for (const button of tabButtons) {
+    const settingsOpen = nextTab === 'setup';
+    button.classList.toggle('active', settingsOpen);
+    button.setAttribute('aria-selected', String(settingsOpen));
+    if (button.id === 'tab-setup') {
+      button.textContent = settingsOpen ? 'Rental Rules' : 'Settings';
+      button.dataset.tab = settingsOpen ? 'rental-rules' : 'setup';
+    }
+  }
+
+  for (const panel of tabPanels) {
+    panel.classList.toggle('active', panel.dataset.panel === nextTab);
+  }
+}
+
 function setupTabs() {
-  document.querySelectorAll('.tab-button').forEach((button) => {
-    button.addEventListener('click', () => {
-      document.querySelectorAll('.tab-button').forEach((item) => item.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.remove('active'));
-      button.classList.add('active');
-      document.querySelector(`[data-panel="${button.dataset.tab}"]`).classList.add('active');
-    });
-  });
+  for (const button of tabButtons) {
+    button.addEventListener('click', () => setActiveTab(button.dataset.tab));
+  }
 }
 
 addRuleRowBtn.addEventListener('click', () => createRuleRow());

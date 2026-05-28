@@ -27,14 +27,19 @@ button, input, textarea, select {
 
 button {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   color: var(--text);
-  background: #1d2c49;
-  padding: 0.55rem 0.8rem;
+  background: linear-gradient(180deg, #11376c 0%, #0d2a55 100%);
+  padding: 0.55rem 0.85rem;
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
 }
 
-button:hover { border-color: var(--accent); }
+button:hover {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, #164585 0%, #103263 100%);
+}
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 input, textarea, select {
@@ -74,29 +79,40 @@ textarea { resize: vertical; }
 
 .app-panel { overflow: hidden; }
 .tabs {
+  position: relative;
+  z-index: 3;
   display: flex;
-  gap: 0.5rem;
+  justify-content: flex-end;
+  gap: 8px;
   padding: 1rem 1rem 0;
+  margin-bottom: 2px;
 }
 .tab-button {
-  background: transparent;
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+  min-width: 140px;
 }
 .tab-button.active {
-  background: var(--panel-soft);
-  border-color: var(--accent);
+  border-color: rgba(170, 220, 255, 0.55);
+  background: linear-gradient(180deg, #1a4c8d 0%, #12396f 100%);
+  box-shadow: inset 0 0 0 1px rgba(201, 233, 255, 0.15);
 }
 
 .config-shell { padding: 1rem; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 .panel-toolbar {
+  position: relative;
+  z-index: 1;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
+  margin-top: -42px;
   margin-bottom: 1rem;
+  padding-right: 160px;
+}
+.tab-panel[data-panel="setup"] .panel-toolbar {
+  margin-top: 0;
+  padding-right: 0;
 }
 .panel-toolbar h2 { margin: 0; }
 .panel-toolbar p { margin: 0; color: var(--muted); font-size: 0.92rem; }
@@ -299,9 +315,8 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
   margin-top: 4px;
 }
 .rail-update-btn {
-  padding: 0.35rem 0.65rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
+  min-width: 70px;
+  padding: 0.4rem 0.75rem;
 }
 .rail-update-btn.update-available {
   border-color: rgba(251, 191, 36, 0.75);

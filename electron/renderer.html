@@ -16,17 +16,14 @@
           </div>
 
           <section class="panel app-panel">
-            <div class="tabs" role="tablist" aria-label="Configuration tabs">
-              <button class="tab-button active" id="tab-rental-rules" type="button" data-tab="rental-rules" role="tab" aria-selected="true">
-                Rental Rules
-              </button>
+            <div class="tabs compact-tabs" role="tablist" aria-label="Configuration tabs">
               <button class="tab-button" id="tab-setup" type="button" data-tab="setup" role="tab" aria-selected="false">
-                Setup
+                Settings
               </button>
             </div>
 
             <form id="config-form" class="config-shell sensitive-hidden">
-              <section class="tab-panel active" data-panel="rental-rules" role="tabpanel" aria-labelledby="tab-rental-rules">
+              <section class="tab-panel active" data-panel="rental-rules" role="tabpanel" aria-label="Rental Rules">
                 <div class="panel-toolbar">
                   <h2>Rental Rules</h2>
                   <p>Renew listed fleets when their current rent is ending and the contract price is within your limit.</p>
@@ -64,7 +61,7 @@
 
               <section class="tab-panel" data-panel="setup" role="tabpanel" aria-labelledby="tab-setup">
                 <div class="panel-toolbar">
-                  <h2>Setup</h2>
+                  <h2>Settings</h2>
                   <button id="toggle-sensitive-btn" type="button">Show Sensitive Fields</button>
                 </div>
 
