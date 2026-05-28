@@ -26,14 +26,22 @@ This project follows the same broad pattern as `gm-market-bot` and `sa-crew-bid-
 
 ## Profiles
 
-Use profiles to run multiple local instances from one codebase without hardcoding a faction into source.
+Use profiles to run multiple local instances without hardcoding a faction into settings.
 
 ```bash
 npm run start -- --profile PROFILE_NAME
 npm run start:electron -- --profile PROFILE_NAME
 ```
 
-The active profile is shown in Setup and drives the app/window name, for example `Fleet Rental Bot - PROFILE_NAME`.
+The active profile is shown in Settings and drives the app/window name, for example `Fleet Rental Bot - PROFILE_NAME`.
+
+For production faction instances, use one app folder per profile:
+
+- `fleet-rental-bot-MUD`
+- `fleet-rental-bot-ONI`
+- `fleet-rental-bot-USTUR`
+
+The in-app updater updates only the app folder it is running from. For named profiles it refuses to update from a shared `fleet-rental-bot` folder so updating USTUR cannot also replace MUD. Each faction folder should be launched and updated separately.
 
 ## Safety defaults
 

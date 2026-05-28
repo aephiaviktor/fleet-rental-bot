@@ -58,7 +58,31 @@ if (_profileName) {
 const TITLE_SUFFIX = _profileName ? ` - ${_profileName}` : '';
 const WINDOW_TITLE = `Fleet Rental Bot${TITLE_SUFFIX}`;
 const APP_DISPLAY_NAME = WINDOW_TITLE;
-const WINDOW_ICON = path.join(__dirname, '..', 'assets', 'fleet-rental-bot-avatar.png');
+
+function getProfileKey(profileName) {
+  const normalizedProfile = String(profileName || '').toUpperCase();
+  if (normalizedProfile.includes('MUD')) return 'mud';
+  if (normalizedProfile.includes('ONI')) return 'oni';
+  if (normalizedProfile.includes('USTUR') || normalizedProfile.includes('UST')) return 'ustur';
+  return '';
+}
+
+function getWindowIconPath(profileName) {
+  const profileKey = getProfileKey(profileName);
+  if (profileKey) {
+    return path.join(__dirname, '..', 'assets', `fleet-rental-bot-${profileKey}.png`);
+  }
+  return path.join(__dirname, '..', 'assets', 'fleet-rental-bot-avatar.png');
+}
+
+function isDedicatedProfileInstall() {
+  if (!_profileName) return true;
+  const appRootName = path.basename(getAppRoot()).toLowerCase();
+  const profileSlug = _profileName.toLowerCase();
+  return appRootName === `fleet-rental-bot-${profileSlug}`;
+}
+
+const WINDOW_ICON = getWindowIconPath(_profileName);
 console.error('[FleetRentalBot] TITLE_SUFFIX =', JSON.stringify(TITLE_SUFFIX));
 
 app.disableHardwareAcceleration();
@@ -187,6 +211,13 @@ async function downloadFile(url, targetPath) {
 }
 
 async function downloadUpdateAndRestart() {
+  if (!isDedicatedProfileInstall()) {
+    throw new Error(
+      `This ${APP_DISPLAY_NAME} instance is running from the shared app folder. ` +
+        `Launch it from a dedicated folder named fleet-rental-bot-${_profileName} before updating.`
+    );
+  }
+
   const latest = await getLatestGithubVersion();
   const currentVersion = await readPackageVersion();
   if (compareVersions(latest.version, currentVersion) <= 0) {

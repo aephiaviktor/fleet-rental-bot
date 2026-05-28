@@ -21,10 +21,6 @@ release/
 out/
 build/
 
-# Local/profile-specific icon variants
-assets/fleet-rental-bot-mud.*
-assets/fleet-rental-bot-ustur.*
-
 # OS/editor noise
 .DS_Store
 Thumbs.db
