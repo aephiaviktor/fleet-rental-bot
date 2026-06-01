@@ -64,6 +64,8 @@ export const AGGRESSIVE_BLOCKHASH_PREWARM_MS = 2000;
 export const AGGRESSIVE_PREPARE_BEFORE_START_MS = 30000;
 export const AGGRESSIVE_STATUS_CHECK_INTERVAL_MS = 1200;
 export const AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS = 4;
+export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
+export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -144,6 +146,7 @@ export type FleetRentalBotConfig = {
     pricePerDay: number | null;
     rentEndsAt: string | null;
   }) => void | Promise<void>;
+  onRestartRequested?: (reason: string) => void | Promise<void>;
 };
 
 export type FleetRentalBotLogger = {
@@ -243,6 +246,16 @@ type CachedBlockhash = {
 type PreparedRentTransaction = {
   instructions: TransactionInstruction[];
   preparedAtMs: number;
+};
+
+type ScheduledAggressiveWindow = {
+  fleetName: string;
+  fleetAccount: string;
+  rentalContract: string;
+  rentEndsAtMs: number;
+  prepareAtMs: number;
+  startAtMs: number;
+  stopAtMs: number;
 };
 
 type RentalContractSnapshot = {
@@ -819,8 +832,12 @@ export class FleetRentalBot {
   private readonly aggressiveIntervalTimers = new Map<string, NodeJS.Timeout>();
   private readonly aggressiveRuntimeByRule = new Map<string, AggressiveRuntimeState>();
   private readonly aggressivePrepareTimers = new Map<string, NodeJS.Timeout>();
+  private readonly scheduledAggressiveWindows = new Map<string, ScheduledAggressiveWindow>();
   private readonly preparedRentByRule = new Map<string, PreparedRentTransaction>();
   private readonly preparingRentByRule = new Map<string, Promise<PreparedRentTransaction>>();
+  private readonly missedAggressiveWindowKeys = new Set<string>();
+  private dailyRestartTimer: NodeJS.Timeout | null = null;
+  private dailyRestartPending = false;
   private blockhashCache: CachedBlockhash | null = null;
   private blockhashRefreshTimer: NodeJS.Timeout | null = null;
   private blockhashRefreshInFlight: Promise<CachedBlockhash> | null = null;
@@ -860,6 +877,7 @@ export class FleetRentalBot {
     this.startedAt = new Date().toISOString();
     this.running = true;
     await this.appendLog({ event: 'START' });
+    this.scheduleNextDailyRestartCheck();
     this.logger.info(`Hot wallet: ${this.wallet.publicKey.toBase58()}`);
     this.logger.info(`SRSLY program: ${this.srslyProgramId.toBase58()}`);
     this.logger.info(`Managing ${this.config.rentalRules.length} rental rule(s). Dry run: ${this.config.dryRun ? 'yes' : 'no'}.`);
@@ -883,12 +901,18 @@ export class FleetRentalBot {
     for (const timer of this.aggressiveStartTimers.values()) clearTimeout(timer);
     for (const timer of this.aggressiveIntervalTimers.values()) clearInterval(timer);
     for (const timer of this.aggressivePrepareTimers.values()) clearTimeout(timer);
+    if (this.dailyRestartTimer) {
+      clearTimeout(this.dailyRestartTimer);
+      this.dailyRestartTimer = null;
+    }
     this.aggressiveStartTimers.clear();
     this.aggressiveIntervalTimers.clear();
     this.aggressivePrepareTimers.clear();
     this.aggressiveRuntimeByRule.clear();
+    this.scheduledAggressiveWindows.clear();
     this.preparedRentByRule.clear();
     this.preparingRentByRule.clear();
+    this.dailyRestartPending = false;
     this.stopBlockhashRefresh();
     this.successfulRentKeys.clear();
   }
@@ -944,6 +968,122 @@ export class FleetRentalBot {
         this.loopTimer = setTimeout(() => void this.loop(), GENERAL_CHECK_INTERVAL_SECONDS * MS_PER_SECOND);
       }
     }
+  }
+
+  private scheduleNextDailyRestartCheck() {
+    if (this.dailyRestartTimer) {
+      clearTimeout(this.dailyRestartTimer);
+      this.dailyRestartTimer = null;
+    }
+
+    const nowMs = Date.now();
+    const now = new Date(nowMs);
+    const nextMidnightUtcMs = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0,
+      0,
+      0,
+      0,
+    );
+    const delayMs = Math.max(0, nextMidnightUtcMs - nowMs);
+    const message = `Daily restart check scheduled for ${new Date(nextMidnightUtcMs).toISOString()}`;
+    this.logger.info(message);
+    void this.appendLog({
+      event: 'RESTART_SCHEDULED',
+      scheduledFor: new Date(nextMidnightUtcMs).toISOString(),
+      delayMs,
+      message,
+    });
+    this.dailyRestartTimer = setTimeout(() => {
+      this.dailyRestartTimer = null;
+      void this.checkDailyRestart('daily_midnight_utc').catch((err: unknown) => {
+        this.logger.error('Daily restart check failed:', err);
+        void this.appendLog({ event: 'RESTART_CHECK_ERROR', message: formatError(err) });
+        if (this.running) this.scheduleNextDailyRestartCheck();
+      });
+    }, delayMs);
+  }
+
+  private scheduleDeferredRestartCheck(reason: string, runAtMs: number) {
+    if (!this.running || !this.dailyRestartPending) return;
+    if (this.dailyRestartTimer) {
+      clearTimeout(this.dailyRestartTimer);
+      this.dailyRestartTimer = null;
+    }
+    const delayMs = Math.max(DAILY_RESTART_CHECK_SETTLE_MS, runAtMs - Date.now());
+    this.dailyRestartTimer = setTimeout(() => {
+      this.dailyRestartTimer = null;
+      void this.checkDailyRestart(reason).catch((err: unknown) => {
+        this.logger.error('Deferred restart check failed:', err);
+        void this.appendLog({ event: 'RESTART_CHECK_ERROR', message: formatError(err) });
+        if (this.running) this.scheduleNextDailyRestartCheck();
+      });
+    }, delayMs);
+  }
+
+  private async checkDailyRestart(reason: string) {
+    if (!this.running) return;
+    this.dailyRestartPending = true;
+
+    const nowMs = Date.now();
+    const blockingWindow = this.findRestartBlockingWindow(nowMs);
+    if (blockingWindow) {
+      const recheckAtMs = blockingWindow.stopAtMs + DAILY_RESTART_CHECK_SETTLE_MS;
+      const message = `Daily restart deferred: ${blockingWindow.fleetName} has preparation/aggressive window activity until ${new Date(blockingWindow.stopAtMs).toISOString()}`;
+      this.logger.info(message);
+      await this.appendLog({
+        event: 'RESTART_DEFERRED',
+        reason,
+        label: blockingWindow.fleetName,
+        fleetAccount: blockingWindow.fleetAccount,
+        rentalContract: blockingWindow.rentalContract,
+        prepareAt: new Date(blockingWindow.prepareAtMs).toISOString(),
+        startAt: new Date(blockingWindow.startAtMs).toISOString(),
+        rentEndsAt: new Date(blockingWindow.rentEndsAtMs).toISOString(),
+        stopAt: new Date(blockingWindow.stopAtMs).toISOString(),
+        recheckAt: new Date(recheckAtMs).toISOString(),
+        message,
+      });
+      this.scheduleDeferredRestartCheck('deferred_window_complete', recheckAtMs);
+      return;
+    }
+
+    const message = 'Daily restart executing: no preparation/aggressive window is active or due within 5 minutes';
+    this.logger.info(message);
+    await this.appendLog({
+      event: 'RESTART_EXECUTED',
+      reason,
+      message,
+    });
+    this.dailyRestartPending = false;
+
+    if (this.config.onRestartRequested) {
+      await this.config.onRestartRequested('daily_midnight_utc');
+    } else {
+      this.scheduleNextDailyRestartCheck();
+    }
+  }
+
+  private findRestartBlockingWindow(nowMs: number): ScheduledAggressiveWindow | null {
+    if (this.aggressiveRuntimeByRule.size > 0 || this.preparingRentByRule.size > 0) {
+      const active = [...this.scheduledAggressiveWindows.values()]
+        .filter((window) => window.stopAtMs >= nowMs)
+        .sort((a, b) => a.stopAtMs - b.stopAtMs)[0];
+      if (active) return active;
+    }
+
+    const nearWindowCutoffMs = nowMs + DAILY_RESTART_DEFER_WINDOW_MS;
+    let nearest: ScheduledAggressiveWindow | null = null;
+    for (const window of this.scheduledAggressiveWindows.values()) {
+      if (window.stopAtMs < nowMs) continue;
+      const preparationNearOrActive = window.prepareAtMs <= nearWindowCutoffMs;
+      const aggressiveNearOrActive = window.startAtMs <= nearWindowCutoffMs;
+      if (!preparationNearOrActive && !aggressiveNearOrActive) continue;
+      if (!nearest || window.stopAtMs < nearest.stopAtMs) nearest = window;
+    }
+    return nearest;
   }
 
   private async processRule(rule: FleetRentalRuleConfig, options?: { force?: boolean }) {
@@ -1040,14 +1180,36 @@ export class FleetRentalBot {
 
     const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
     const delayMs = Math.max(0, startAtMs - Date.now());
+    const stopAtMs = rentEndsAt.getTime() + this.config.aggressiveStopAfterEndSeconds * MS_PER_SECOND;
+    this.scheduledAggressiveWindows.set(key, {
+      fleetName: rule.fleetName,
+      fleetAccount: rule.fleetAccount,
+      rentalContract: rule.rentalContract,
+      rentEndsAtMs: rentEndsAt.getTime(),
+      prepareAtMs: startAtMs - AGGRESSIVE_PREPARE_BEFORE_START_MS,
+      startAtMs,
+      stopAtMs,
+    });
     const timer = setTimeout(() => {
       this.aggressiveStartTimers.delete(key);
       this.beginAggressiveSending(rule, rentEndsAt);
     }, delayMs);
     this.aggressiveStartTimers.set(key, timer);
-    this.logger.info(
-      `Aggressive phase scheduled for ${rule.fleetName}: starts in ${Math.ceil(delayMs / MS_PER_SECOND)}s, ends ${this.config.aggressiveStopAfterEndSeconds}s after rent end`,
-    );
+    const message = `Aggressive phase scheduled for ${rule.fleetName}: starts at ${new Date(startAtMs).toISOString()} (${Math.ceil(delayMs / MS_PER_SECOND)}s), ends at ${new Date(stopAtMs).toISOString()}`;
+    this.logger.info(message);
+    void this.appendLog({
+      event: 'AGGRESSIVE_SCHEDULED',
+      label: rule.fleetName,
+      fleetAccount: rule.fleetAccount,
+      rentalContract: rule.rentalContract,
+      startAt: new Date(startAtMs).toISOString(),
+      rentEndsAt: rentEndsAt.toISOString(),
+      stopAt: new Date(stopAtMs).toISOString(),
+      delayMs,
+      aggressiveStartBeforeEndSeconds: this.config.aggressiveStartBeforeEndSeconds,
+      aggressiveStopAfterEndSeconds: this.config.aggressiveStopAfterEndSeconds,
+      message,
+    });
   }
 
   private scheduleAggressivePreparation(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
@@ -1058,13 +1220,50 @@ export class FleetRentalBot {
     const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
     const prepareAtMs = startAtMs - AGGRESSIVE_PREPARE_BEFORE_START_MS;
     const delayMs = Math.max(0, prepareAtMs - Date.now());
+    const scheduledMessage = `Aggressive preparation scheduled for ${rule.fleetName}: starts at ${new Date(prepareAtMs).toISOString()} (${Math.ceil(delayMs / MS_PER_SECOND)}s before timer)`;
     const timer = setTimeout(() => {
       this.aggressivePrepareTimers.delete(key);
+      const startedMessage = `Aggressive preparation started for ${rule.fleetName}`;
+      this.logger.info(startedMessage);
+      void this.appendLog({
+        event: 'AGGRESSIVE_PREPARE_START',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        prepareAt: new Date(prepareAtMs).toISOString(),
+        startAt: new Date(startAtMs).toISOString(),
+        rentEndsAt: rentEndsAt.toISOString(),
+        message: startedMessage,
+      });
       void this.prepareRentForAggressive(rule).catch((err: unknown) => {
-        this.logger.warn(`Could not prepare aggressive rent transaction for ${rule.fleetName}:`, err);
+        const message = `Could not prepare aggressive rent transaction for ${rule.fleetName}: ${formatError(err)}`;
+        this.logger.warn(message);
+        void this.appendLog({
+          event: 'AGGRESSIVE_PREPARE_FAILED',
+          label: rule.fleetName,
+          fleetAccount: rule.fleetAccount,
+          rentalContract: rule.rentalContract,
+          prepareAt: new Date(prepareAtMs).toISOString(),
+          startAt: new Date(startAtMs).toISOString(),
+          rentEndsAt: rentEndsAt.toISOString(),
+          message,
+        });
       });
     }, delayMs);
     this.aggressivePrepareTimers.set(key, timer);
+    this.logger.info(scheduledMessage);
+    void this.appendLog({
+      event: 'AGGRESSIVE_PREPARE_SCHEDULED',
+      label: rule.fleetName,
+      fleetAccount: rule.fleetAccount,
+      rentalContract: rule.rentalContract,
+      prepareAt: new Date(prepareAtMs).toISOString(),
+      startAt: new Date(startAtMs).toISOString(),
+      rentEndsAt: rentEndsAt.toISOString(),
+      delayMs,
+      prepareBeforeStartMs: AGGRESSIVE_PREPARE_BEFORE_START_MS,
+      message: scheduledMessage,
+    });
 
     const blockhashPrewarmAtMs = startAtMs - AGGRESSIVE_BLOCKHASH_PREWARM_MS;
     const blockhashDelayMs = Math.max(0, blockhashPrewarmAtMs - Date.now());
@@ -1166,7 +1365,28 @@ export class FleetRentalBot {
       this.scheduleAggressivePhase(rule, rentEndsAt);
       return;
     }
-    if (nowMs > stopAtMs) return;
+    if (nowMs > stopAtMs) {
+      const missedKey = `${key}:${rentEndsAt.getTime()}`;
+      if (!this.missedAggressiveWindowKeys.has(missedKey)) {
+        this.missedAggressiveWindowKeys.add(missedKey);
+        const message = `Aggressive window missed for ${rule.fleetName}: now ${new Date(nowMs).toISOString()} is after stop ${new Date(stopAtMs).toISOString()}`;
+        this.logger.warn(message);
+        void this.appendLog({
+          event: 'AGGRESSIVE_MISSED_WINDOW',
+          label: rule.fleetName,
+          fleetAccount: rule.fleetAccount,
+          rentalContract: rule.rentalContract,
+          startAt: new Date(startAtMs).toISOString(),
+          rentEndsAt: rentEndsAt.toISOString(),
+          stopAt: new Date(stopAtMs).toISOString(),
+          missedAt: new Date(nowMs).toISOString(),
+          lateByMs: nowMs - stopAtMs,
+          message,
+        });
+      }
+      this.scheduledAggressiveWindows.delete(key);
+      return;
+    }
 
     const sendIntervalMs = this.config.useHeliusSender
       ? this.config.aggressiveSendIntervalMs
@@ -1239,6 +1459,7 @@ export class FleetRentalBot {
     this.aggressiveIntervalTimers.delete(key);
     const attempts = this.aggressiveRuntimeByRule.get(key)?.attempts ?? 0;
     this.aggressiveRuntimeByRule.delete(key);
+    this.scheduledAggressiveWindows.delete(key);
     this.preparedRentByRule.delete(key);
     if (this.aggressiveIntervalTimers.size === 0) {
       this.stopBlockhashRefresh();

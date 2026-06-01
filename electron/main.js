@@ -506,6 +506,12 @@ async function startBotFromSettings() {
   await validateAephiaApiKeyOrThrow(configInput);
   const config = buildBotConfig(configInput);
   config.onRentSuccess = updateSavedRentalEnd;
+  config.onRestartRequested = async (reason) => {
+    logger.info(`Bot requested app restart: ${reason}`);
+    await stopBot();
+    app.relaunch();
+    app.exit(0);
+  };
   bot = new FleetRentalBot(config, logger);
   botRunning = true;
   broadcast('bot-status', { running: true });
