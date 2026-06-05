@@ -469,13 +469,22 @@ class SharedRpcRequestLimiter {
   constructor(
     private readonly logger: FleetRentalBotLogger,
     private readonly useSharedLimiter: () => boolean,
+    private readonly metricsApp: string,
+    private readonly metricsProfile: string = 'default',
   ) {}
 
-  async wait(label: string, bucketName: 'rpc:shared' | 'tx:shared' = 'rpc:shared'): Promise<void> {
+  async wait(label: string, bucketName: 'rpc:shared' | 'tx:shared' = 'rpc:shared', method: string = label): Promise<void> {
     if (!this.useSharedLimiter()) return;
 
     const sharedStartedAt = Date.now();
-    await this.sharedLimiter.wait(bucketName, { label });
+    await this.sharedLimiter.wait(bucketName, {
+      label,
+      metrics: {
+        app: this.metricsApp,
+        profile: this.metricsProfile,
+        method,
+      },
+    });
     const sharedWaitMs = Date.now() - sharedStartedAt;
     const logKey = `${bucketName}:${label}`;
     const lastLoggedAt = this.lastSharedWaitLogAtMs.get(logKey) ?? 0;
@@ -493,8 +502,9 @@ async function callRpcWithSharedLimiter<T>(
   invoke: () => Promise<T>,
   limiter: SharedRpcRequestLimiter,
   bucketName: 'rpc:shared' | 'tx:shared' = 'rpc:shared',
+  method: string = label,
 ): Promise<T> {
-  await limiter.wait(label, bucketName);
+  await limiter.wait(label, bucketName, method);
   return invoke();
 }
 
@@ -503,18 +513,20 @@ function createFailoverConnection(
   fallbackUrl: string | undefined,
   logger: FleetRentalBotLogger,
   useSharedLimiter: () => boolean,
+  metricsProfile: string,
 ): Connection {
   const primary = new Connection(primaryUrl, { commitment: 'confirmed' });
-  const limiter = new SharedRpcRequestLimiter(logger, useSharedLimiter);
+  const limiter = new SharedRpcRequestLimiter(logger, useSharedLimiter, 'Fleet Rental Bot', metricsProfile);
   if (!fallbackUrl || fallbackUrl === primaryUrl) {
     return new Proxy(primary, {
       get(target, prop, receiver) {
         const primaryValue = Reflect.get(target, prop, receiver);
         if (typeof primaryValue !== 'function') return primaryValue;
         return async (...args: unknown[]) => {
+          const method = String(prop);
           const label = `Connection.${String(prop)}()`;
           const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
-          return callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName);
+          return callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName, method);
         };
       },
     }) as Connection;
@@ -528,10 +540,11 @@ function createFailoverConnection(
       const fallbackValue = Reflect.get(fallback, prop, fallback);
       if (typeof fallbackValue !== 'function') return primaryValue.bind(target);
       return async (...args: unknown[]) => {
+        const method = String(prop);
         const label = `Connection.${String(prop)}()`;
         const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
         try {
-          return await callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName);
+          return await callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName, method);
         } catch (error) {
           logger.warn(`Primary RPC failed for Connection.${String(prop)}(), trying fallback RPC.`, error);
           return await callRpcWithSharedLimiter(
@@ -539,6 +552,7 @@ function createFailoverConnection(
             () => fallbackValue.apply(fallback, args),
             limiter,
             bucketName,
+            method,
           );
         }
       };
@@ -946,6 +960,7 @@ export class FleetRentalBot {
       config.rpcUrlFallback,
       this.logger,
       () => this.config.useRpcLimiter,
+      this.config.instanceName || 'default',
     );
     this.provider = new AnchorProvider(this.connection, new Wallet(this.wallet), { commitment: 'confirmed' });
     this.srslyProgramId = new PublicKey(config.srslyProgramId);
