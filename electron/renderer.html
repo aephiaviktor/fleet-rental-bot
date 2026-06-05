@@ -65,112 +65,114 @@
               <section class="tab-panel" data-panel="setup" role="tabpanel" aria-labelledby="tab-setup">
                 <div class="panel-toolbar">
                   <h2>Settings</h2>
-                  <button id="toggle-sensitive-btn" type="button">Show Sensitive Fields</button>
+                  <button id="toggle-sensitive-btn" class="sensitive-toggle" type="button">Show Sensitive Fields</button>
                 </div>
 
-                <div class="display-account-grid">
-                  <div class="display-account">
-                    <span>Hot Wallet Address</span>
-                    <strong id="display-hot-wallet-address">—</strong>
-                  </div>
-                  <div class="display-account">
-                    <span>Managed / Asset Owner Wallet</span>
-                    <strong id="display-managed-wallet">—</strong>
-                  </div>
-                  <div class="display-account">
-                    <span>Managed Player Profile</span>
-                    <strong id="display-managed-player-profile">—</strong>
-                  </div>
-                </div>
-
-                <div class="config-grid">
-                  <label>
-                    Faction
-                    <input name="INSTANCE_NAME" type="text" autocomplete="off" placeholder="e.g. PROFILE_NAME" readonly />
-                  </label>
-                  <label>
-                    Aephia API Key
-                    <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" />
-                  </label>
-                  <label>
-                    RPC URL
-                    <input class="sensitive-field" name="RPC_URL" type="text" autocomplete="off" />
-                  </label>
-                  <section class="config-section rpc-limiter-section">
-                    <label class="checkbox-row">
-                      <input name="USE_RPC_LIMITER" type="checkbox" />
-                      <span>Use RPC Limiter</span>
-                    </label>
-                    <label class="rpc-limiter-current-url">
-                      Current RPC Limiter URL
-                      <input class="sensitive-field" id="rpc-limiter-current-url" type="text" readonly autocomplete="off" />
-                    </label>
-                    <div class="rpc-limiter-state-row">
-                      <span>State: <strong id="rpc-limiter-state-path">—</strong></span>
-                      <span class="rpc-limiter-updated" id="rpc-limiter-updated"></span>
+                <div class="setup-scroll">
+                  <div class="display-account-grid">
+                    <div class="display-account">
+                      <span>Hot Wallet Address</span>
+                      <strong id="display-hot-wallet-address">—</strong>
                     </div>
-                    <div class="rpc-limiter-send-grid">
-                      <label>
-                        Requests / sec
-                        <input name="RPC_REQUESTS_PER_SECOND" type="text" autocomplete="off" />
+                    <div class="display-account">
+                      <span>Managed / Asset Owner Wallet</span>
+                      <strong id="display-managed-wallet">—</strong>
+                    </div>
+                    <div class="display-account">
+                      <span>Managed Player Profile</span>
+                      <strong id="display-managed-player-profile">—</strong>
+                    </div>
+                  </div>
+
+                  <div class="config-grid">
+                    <label>
+                      Faction
+                      <input name="INSTANCE_NAME" type="text" autocomplete="off" placeholder="e.g. PROFILE_NAME" readonly />
+                    </label>
+                    <label>
+                      Aephia API Key
+                      <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      RPC URL
+                      <input class="sensitive-field" name="RPC_URL" type="text" autocomplete="off" />
+                    </label>
+                    <section class="config-section rpc-limiter-section">
+                      <label class="checkbox-row">
+                        <input name="USE_RPC_LIMITER" type="checkbox" />
+                        <span>Use RPC Limiter</span>
+                      </label>
+                      <label class="rpc-limiter-current-url">
+                        Current RPC Limiter URL
+                        <input class="sensitive-field" id="rpc-limiter-current-url" type="text" readonly autocomplete="off" />
+                      </label>
+                      <div class="rpc-limiter-state-row">
+                        <span>State: <strong id="rpc-limiter-state-path">—</strong></span>
+                        <span class="rpc-limiter-updated" id="rpc-limiter-updated"></span>
+                      </div>
+                      <div class="rpc-limiter-send-grid">
+                        <label>
+                          Requests / sec
+                          <input name="RPC_REQUESTS_PER_SECOND" type="text" autocomplete="off" />
+                        </label>
+                        <label>
+                          sendTransaction / sec
+                          <input name="RPC_TX_SEND_RATE_LIMIT_PER_SECOND" type="text" autocomplete="off" />
+                        </label>
+                      </div>
+                      <button id="send-rpc-limiter-btn" type="button">Send settings to RPC Limiter</button>
+                    </section>
+                    <label>
+                      Hot Wallet Secret
+                      <textarea class="sensitive-field" name="HOT_WALLET_SECRET" rows="3"></textarea>
+                    </label>
+                    <label>
+                      Managed / Asset Owner Wallet
+                      <input class="sensitive-field" name="OWNER_WALLET" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      Managed Player Profile
+                      <input class="sensitive-field" name="OWNER_PROFILE" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      Aggressive Start Before End Seconds
+                      <input name="AGGRESSIVE_START_BEFORE_END_SECONDS" type="number" min="0" step="0.1" autocomplete="off" />
+                    </label>
+                    <label>
+                      Aggressive Stop After End Seconds
+                      <input name="AGGRESSIVE_STOP_AFTER_END_SECONDS" type="number" min="0" step="0.1" autocomplete="off" />
+                    </label>
+                    <section class="config-section transaction-section">
+                      <label class="checkbox-row">
+                        <input name="USE_HELIUS_SENDER" type="checkbox" />
+                        <span>
+                          Use Helius Sender
+                          <small>Optimized landing endpoint for time-sensitive transactions. When disabled, the bot uses normal RPC sends.</small>
+                        </span>
                       </label>
                       <label>
-                        sendTransaction / sec
-                        <input name="RPC_TX_SEND_RATE_LIMIT_PER_SECOND" type="text" autocomplete="off" />
+                        Aggressive Send Interval ms
+                        <input name="AGGRESSIVE_SEND_INTERVAL_MS" type="text" autocomplete="off" />
                       </label>
-                    </div>
-                    <button id="send-rpc-limiter-btn" type="button">Send settings to RPC Limiter</button>
-                  </section>
-                  <label>
-                    Hot Wallet Secret
-                    <textarea class="sensitive-field" name="HOT_WALLET_SECRET" rows="3"></textarea>
-                  </label>
-                  <label>
-                    Managed / Asset Owner Wallet
-                    <input class="sensitive-field" name="OWNER_WALLET" type="text" autocomplete="off" />
-                  </label>
-                  <label>
-                    Managed Player Profile
-                    <input class="sensitive-field" name="OWNER_PROFILE" type="text" autocomplete="off" />
-                  </label>
-                  <label>
-                    Aggressive Start Before End Seconds
-                    <input name="AGGRESSIVE_START_BEFORE_END_SECONDS" type="number" min="0" step="0.1" autocomplete="off" />
-                  </label>
-                  <label>
-                    Aggressive Stop After End Seconds
-                    <input name="AGGRESSIVE_STOP_AFTER_END_SECONDS" type="number" min="0" step="0.1" autocomplete="off" />
-                  </label>
-                  <section class="config-section transaction-section">
-                    <label class="checkbox-row">
-                      <input name="USE_HELIUS_SENDER" type="checkbox" />
-                      <span>
-                        Use Helius Sender
-                        <small>Optimized landing endpoint for time-sensitive transactions. When disabled, the bot uses normal RPC sends.</small>
-                      </span>
-                    </label>
-                    <label>
-                      Aggressive Send Interval ms
-                      <input name="AGGRESSIVE_SEND_INTERVAL_MS" type="text" autocomplete="off" />
-                    </label>
-                    <label>
-                      Fallback Priority Fee microLamports/CU
-                      <input name="TRANSACTION_PRIORITY_FEE_MICROLAMPORTS" type="number" min="1" step="1" autocomplete="off" />
-                    </label>
-                    <label>
-                      Priority Fee Max microLamports/CU
-                      <input name="HELIUS_PRIORITY_FEE_MAX_MICROLAMPORTS" type="number" min="1" step="1" autocomplete="off" />
-                    </label>
-                    <label>
-                      Sender Tip SOL
-                      <input name="HELIUS_SENDER_TIP_SOL" type="number" min="0.0002" step="0.000001" autocomplete="off" />
-                    </label>
-                  </section>
-                </div>
+                      <label>
+                        Fallback Priority Fee microLamports/CU
+                        <input name="TRANSACTION_PRIORITY_FEE_MICROLAMPORTS" type="number" min="1" step="1" autocomplete="off" />
+                      </label>
+                      <label>
+                        Priority Fee Max microLamports/CU
+                        <input name="HELIUS_PRIORITY_FEE_MAX_MICROLAMPORTS" type="number" min="1" step="1" autocomplete="off" />
+                      </label>
+                      <label>
+                        Sender Tip SOL
+                        <input name="HELIUS_SENDER_TIP_SOL" type="number" min="0.0002" step="0.000001" autocomplete="off" />
+                      </label>
+                    </section>
+                  </div>
 
-                <div class="panel setup-logs-panel">
-                  <h2>Logs</h2>
-                  <pre id="logs"></pre>
+                  <div class="panel setup-logs-panel">
+                    <h2>Logs</h2>
+                    <pre id="logs"></pre>
+                  </div>
                 </div>
               </section>
             </form>
