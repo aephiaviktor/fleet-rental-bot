@@ -20,6 +20,10 @@ const updateLatestVersionEl = document.getElementById('update-latest-version');
 const updateMessageEl = document.getElementById('update-message');
 const updateConfirmBtn = document.getElementById('update-confirm-btn');
 const updateCancelBtn = document.getElementById('update-cancel-btn');
+const sendRpcLimiterBtn = document.getElementById('send-rpc-limiter-btn');
+const rpcLimiterCurrentUrlEl = document.getElementById('rpc-limiter-current-url');
+const rpcLimiterStatePathEl = document.getElementById('rpc-limiter-state-path');
+const rpcLimiterUpdatedEl = document.getElementById('rpc-limiter-updated');
 const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
 const tabPanels = Array.from(document.querySelectorAll('.tab-panel'));
 
@@ -35,6 +39,9 @@ const CONFIG_KEYS = [
   'AGGRESSIVE_START_BEFORE_END_SECONDS',
   'AGGRESSIVE_STOP_AFTER_END_SECONDS',
   'AGGRESSIVE_SEND_INTERVAL_MS',
+  'RPC_REQUESTS_PER_SECOND',
+  'RPC_TX_SEND_RATE_LIMIT_PER_SECOND',
+  'USE_RPC_LIMITER',
   'TRANSACTION_PRIORITY_FEE_MICROLAMPORTS',
   'HELIUS_PRIORITY_FEE_MAX_MICROLAMPORTS',
   'USE_HELIUS_SENDER',
@@ -326,6 +333,29 @@ function setConfigValues(config) {
     }
   }
   syncHeliusSenderTipMinimum();
+  updateRpcLimiterModeTone();
+}
+
+function updateRpcLimiterModeTone() {
+  const useRpcLimiter = parseBoolean(form.elements['USE_RPC_LIMITER']?.checked ? 'true' : 'false');
+  form.classList.toggle('rpc-limiter-enabled', useRpcLimiter);
+  form.classList.toggle('rpc-limiter-disabled', !useRpcLimiter);
+}
+
+function renderRpcLimiterStatus(status) {
+  if (!status) {
+    rpcLimiterCurrentUrlEl.value = '';
+    rpcLimiterStatePathEl.textContent = '—';
+    rpcLimiterUpdatedEl.textContent = '';
+    return;
+  }
+
+  rpcLimiterCurrentUrlEl.value = status.currentRpcUrl || '';
+  rpcLimiterStatePathEl.textContent = status.path || '—';
+  const updatedParts = [];
+  if (status.updatedBy) updatedParts.push(`updated by ${status.updatedBy}`);
+  if (status.updatedAt) updatedParts.push(`at ${status.updatedAt}`);
+  rpcLimiterUpdatedEl.textContent = updatedParts.join(' ');
 }
 
 function setDisplayAccounts(displayAccounts) {
@@ -394,6 +424,7 @@ function refreshDisplayAccountsFromForm() {
 async function loadSettings() {
   const settings = await window.botApi.getSettings();
   setConfigValues(settings.config || {});
+  renderRpcLimiterStatus(settings.rpcLimiter);
   setDisplayAccounts(settings.displayAccounts || {});
   rentalRulesBody.innerHTML = '';
   (settings.rentalRules || []).forEach(createRuleRow);
@@ -405,6 +436,7 @@ async function saveSettings() {
   try {
     validateHeliusSenderSettings();
     const result = await window.botApi.saveSettings({ config: getConfigValues(), rentalRules: getRentalRulesFromForm() });
+    if (result?.rpcLimiter) renderRpcLimiterStatus(result.rpcLimiter);
     refreshDisplayAccountsFromForm();
     appendLog({
       timestamp: new Date().toISOString(),
@@ -537,6 +569,19 @@ function setupTabs() {
 
 addRuleRowBtn.addEventListener('click', () => createRuleRow());
 saveBtn.addEventListener('click', saveSettings);
+sendRpcLimiterBtn.addEventListener('click', async () => {
+  sendRpcLimiterBtn.disabled = true;
+  try {
+    const status = await window.botApi.sendSettingsToRpcLimiter({ config: getConfigValues() });
+    renderRpcLimiterStatus(status);
+    appendLog({ timestamp: new Date().toISOString(), level: 'INFO', message: 'Sent settings to RPC Limiter' });
+  } catch (err) {
+    appendLog({ timestamp: new Date().toISOString(), level: 'ERROR', message: err.message || String(err) });
+  } finally {
+    sendRpcLimiterBtn.disabled = false;
+  }
+});
+form.elements['USE_RPC_LIMITER']?.addEventListener('change', updateRpcLimiterModeTone);
 startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
   try {

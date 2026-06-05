@@ -19,6 +19,7 @@ import {
   TransactionInstruction,
   VersionedTransaction,
 } from '@solana/web3.js';
+import { RpcLimiter } from 'rpc_limiter';
 
 export const DEFAULT_SRSLY_PROGRAM_ID = 'SRSLY1fq9TJqCk1gNSE7VZL2bztvTn9wm4VR8u8jMKT';
 export const SAGE_PROGRAM_ID = 'SAGE2HAwep459SNq61LHvjxPk4pLPEJLoMETef7f7EE';
@@ -41,6 +42,8 @@ export const DEFAULT_HELIUS_PRIORITY_FEE_MAX_MICROLAMPORTS = 250000;
 export const DEFAULT_USE_HELIUS_SENDER = false;
 export const DEFAULT_HELIUS_SENDER_SWQOS_ONLY = false;
 export const DEFAULT_HELIUS_SENDER_TIP_SOL = 0.0002;
+export const DEFAULT_RPC_REQUESTS_PER_SECOND = 10;
+export const DEFAULT_RPC_TX_SEND_RATE_LIMIT_PER_SECOND = 1;
 export const HELIUS_SENDER_MIN_TIP_SOL = 0.0002;
 export const HELIUS_SENDER_SWQOS_ONLY_MIN_TIP_SOL = 0.000005;
 export const HELIUS_SENDER_ENDPOINT = 'https://sender.helius-rpc.com/fast';
@@ -66,6 +69,8 @@ export const AGGRESSIVE_STATUS_CHECK_INTERVAL_MS = 1200;
 export const AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS = 4;
 export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
 export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
+export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
+export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -106,6 +111,10 @@ export type FleetRentalBotInputConfig = {
   AGGRESSIVE_START_BEFORE_END_SECONDS?: string | number;
   AGGRESSIVE_STOP_AFTER_END_SECONDS?: string | number;
   AGGRESSIVE_SEND_INTERVAL_MS?: string | number;
+  RPC_REQUESTS_PER_SECOND?: string | number;
+  RPC_TX_SEND_RATE_LIMIT_PER_SECOND?: string | number;
+  USE_RPC_LIMITER?: string | boolean | number;
+  useRpcLimiter?: string | boolean | number;
   USE_NORMAL_TXS?: string | boolean | number;
   USE_SWQOS?: string | boolean | number;
   TRANSACTION_PRIORITY_FEE_MICROLAMPORTS?: string | number;
@@ -129,6 +138,9 @@ export type FleetRentalBotConfig = {
   aggressiveStartBeforeEndSeconds: number;
   aggressiveStopAfterEndSeconds: number;
   aggressiveSendIntervalMs: number;
+  rpcRequestsPerSecond: number;
+  rpcTxSendRateLimitPerSecond: number;
+  useRpcLimiter: boolean;
   useNormalTxs: boolean;
   transactionPriorityFeeMicroLamports: number;
   heliusPriorityFeeMaxMicroLamports: number;
@@ -235,6 +247,7 @@ type AggressiveRuntimeState = {
   lastStatusCheckAtMs: number;
   statusCheckInFlight: boolean;
   lastSubmittedSignature: string | null;
+  sharedExclusiveHeld: boolean;
 };
 
 type CachedBlockhash = {
@@ -285,6 +298,9 @@ export const EDITABLE_CONFIG_KEYS = [
   'AGGRESSIVE_START_BEFORE_END_SECONDS',
   'AGGRESSIVE_STOP_AFTER_END_SECONDS',
   'AGGRESSIVE_SEND_INTERVAL_MS',
+  'RPC_REQUESTS_PER_SECOND',
+  'RPC_TX_SEND_RATE_LIMIT_PER_SECOND',
+  'USE_RPC_LIMITER',
   'USE_NORMAL_TXS',
   'USE_SWQOS',
   'TRANSACTION_PRIORITY_FEE_MICROLAMPORTS',
@@ -311,6 +327,9 @@ export function getEditableConfigFromEnv(env: Partial<Record<string, string | un
     AGGRESSIVE_START_BEFORE_END_SECONDS: env.AGGRESSIVE_START_BEFORE_END_SECONDS ?? String(DEFAULT_AGGRESSIVE_START_BEFORE_END_SECONDS),
     AGGRESSIVE_STOP_AFTER_END_SECONDS: env.AGGRESSIVE_STOP_AFTER_END_SECONDS ?? String(DEFAULT_AGGRESSIVE_STOP_AFTER_END_SECONDS),
     AGGRESSIVE_SEND_INTERVAL_MS: env.AGGRESSIVE_SEND_INTERVAL_MS ?? String(DEFAULT_AGGRESSIVE_SEND_INTERVAL_MS),
+    RPC_REQUESTS_PER_SECOND: env.RPC_REQUESTS_PER_SECOND ?? String(DEFAULT_RPC_REQUESTS_PER_SECOND),
+    RPC_TX_SEND_RATE_LIMIT_PER_SECOND: env.RPC_TX_SEND_RATE_LIMIT_PER_SECOND ?? String(DEFAULT_RPC_TX_SEND_RATE_LIMIT_PER_SECOND),
+    USE_RPC_LIMITER: env.USE_RPC_LIMITER ?? 'false',
     USE_NORMAL_TXS: env.USE_NORMAL_TXS ?? 'true',
     USE_SWQOS: env.USE_SWQOS ?? 'false',
     TRANSACTION_PRIORITY_FEE_MICROLAMPORTS:
@@ -338,6 +357,9 @@ export function buildBotConfig(input: FleetRentalBotInputConfig): FleetRentalBot
     AGGRESSIVE_START_BEFORE_END_SECONDS: input.AGGRESSIVE_START_BEFORE_END_SECONDS as string | undefined,
     AGGRESSIVE_STOP_AFTER_END_SECONDS: input.AGGRESSIVE_STOP_AFTER_END_SECONDS as string | undefined,
     AGGRESSIVE_SEND_INTERVAL_MS: input.AGGRESSIVE_SEND_INTERVAL_MS as string | undefined,
+    RPC_REQUESTS_PER_SECOND: input.RPC_REQUESTS_PER_SECOND as string | undefined,
+    RPC_TX_SEND_RATE_LIMIT_PER_SECOND: input.RPC_TX_SEND_RATE_LIMIT_PER_SECOND as string | undefined,
+    USE_RPC_LIMITER: String(input.useRpcLimiter ?? input.USE_RPC_LIMITER ?? ''),
     USE_NORMAL_TXS: input.USE_NORMAL_TXS as string | undefined,
     USE_SWQOS: input.USE_SWQOS as string | undefined,
     TRANSACTION_PRIORITY_FEE_MICROLAMPORTS: input.TRANSACTION_PRIORITY_FEE_MICROLAMPORTS as string | undefined,
@@ -357,6 +379,12 @@ export function buildBotConfig(input: FleetRentalBotInputConfig): FleetRentalBot
   validatePublicKey(editable.OWNER_WALLET, 'OWNER_WALLET');
   validatePublicKey(editable.OWNER_PROFILE, 'OWNER_PROFILE');
   const useHeliusSender = parseBoolean(editable.USE_HELIUS_SENDER);
+  const rpcRequestsPerSecond = parsePositiveNumber(editable.RPC_REQUESTS_PER_SECOND, 'RPC_REQUESTS_PER_SECOND');
+  const rpcTxSendRateLimitPerSecond = parsePositiveNumber(
+    editable.RPC_TX_SEND_RATE_LIMIT_PER_SECOND,
+    'RPC_TX_SEND_RATE_LIMIT_PER_SECOND',
+  );
+  const useRpcLimiter = parseBoolean(editable.USE_RPC_LIMITER);
   const useNormalTxs = !useHeliusSender;
   const heliusSenderSwqosOnly = parseBoolean(editable.HELIUS_SENDER_SWQOS_ONLY);
   const heliusSenderTipSol = parsePositiveNumber(editable.HELIUS_SENDER_TIP_SOL, 'HELIUS_SENDER_TIP_SOL');
@@ -376,6 +404,9 @@ export function buildBotConfig(input: FleetRentalBotInputConfig): FleetRentalBot
     aggressiveStartBeforeEndSeconds: parseNonNegativeNumber(editable.AGGRESSIVE_START_BEFORE_END_SECONDS, 'AGGRESSIVE_START_BEFORE_END_SECONDS'),
     aggressiveStopAfterEndSeconds: parseNonNegativeNumber(editable.AGGRESSIVE_STOP_AFTER_END_SECONDS, 'AGGRESSIVE_STOP_AFTER_END_SECONDS'),
     aggressiveSendIntervalMs: parsePositiveInteger(editable.AGGRESSIVE_SEND_INTERVAL_MS, 'AGGRESSIVE_SEND_INTERVAL_MS'),
+    rpcRequestsPerSecond,
+    rpcTxSendRateLimitPerSecond,
+    useRpcLimiter,
     useNormalTxs,
     transactionPriorityFeeMicroLamports: parsePositiveInteger(
       editable.TRANSACTION_PRIORITY_FEE_MICROLAMPORTS,
@@ -431,10 +462,62 @@ export function parseRentalRule(input: FleetRentalRuleInput, index?: number): Fl
   };
 }
 
-function createFailoverConnection(primaryUrl: string, fallbackUrl: string | undefined, logger: FleetRentalBotLogger): Connection {
+class SharedRpcRequestLimiter {
+  private readonly sharedLimiter = new RpcLimiter();
+  private readonly lastSharedWaitLogAtMs = new Map<string, number>();
+
+  constructor(
+    private readonly logger: FleetRentalBotLogger,
+    private readonly useSharedLimiter: () => boolean,
+  ) {}
+
+  async wait(label: string, bucketName: 'rpc:shared' | 'tx:shared' = 'rpc:shared'): Promise<void> {
+    if (!this.useSharedLimiter()) return;
+
+    const sharedStartedAt = Date.now();
+    await this.sharedLimiter.wait(bucketName, { label });
+    const sharedWaitMs = Date.now() - sharedStartedAt;
+    const logKey = `${bucketName}:${label}`;
+    const lastLoggedAt = this.lastSharedWaitLogAtMs.get(logKey) ?? 0;
+    const now = Date.now();
+    if (sharedWaitMs > RPC_LIMITER_SLOW_WAIT_LOG_MS && now - lastLoggedAt >= RPC_LIMITER_WAIT_LOG_THROTTLE_MS) {
+      const prefix = bucketName === 'tx:shared' ? 'TX limiter' : 'RPC limiter';
+      this.logger.info(`${prefix} waiting for ${label}.`);
+      this.lastSharedWaitLogAtMs.set(logKey, now);
+    }
+  }
+}
+
+async function callRpcWithSharedLimiter<T>(
+  label: string,
+  invoke: () => Promise<T>,
+  limiter: SharedRpcRequestLimiter,
+  bucketName: 'rpc:shared' | 'tx:shared' = 'rpc:shared',
+): Promise<T> {
+  await limiter.wait(label, bucketName);
+  return invoke();
+}
+
+function createFailoverConnection(
+  primaryUrl: string,
+  fallbackUrl: string | undefined,
+  logger: FleetRentalBotLogger,
+  useSharedLimiter: () => boolean,
+): Connection {
   const primary = new Connection(primaryUrl, { commitment: 'confirmed' });
+  const limiter = new SharedRpcRequestLimiter(logger, useSharedLimiter);
   if (!fallbackUrl || fallbackUrl === primaryUrl) {
-    return primary;
+    return new Proxy(primary, {
+      get(target, prop, receiver) {
+        const primaryValue = Reflect.get(target, prop, receiver);
+        if (typeof primaryValue !== 'function') return primaryValue;
+        return async (...args: unknown[]) => {
+          const label = `Connection.${String(prop)}()`;
+          const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
+          return callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName);
+        };
+      },
+    }) as Connection;
   }
 
   const fallback = new Connection(fallbackUrl, { commitment: 'confirmed' });
@@ -445,11 +528,18 @@ function createFailoverConnection(primaryUrl: string, fallbackUrl: string | unde
       const fallbackValue = Reflect.get(fallback, prop, fallback);
       if (typeof fallbackValue !== 'function') return primaryValue.bind(target);
       return async (...args: unknown[]) => {
+        const label = `Connection.${String(prop)}()`;
+        const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
         try {
-          return await primaryValue.apply(target, args);
+          return await callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName);
         } catch (error) {
           logger.warn(`Primary RPC failed for Connection.${String(prop)}(), trying fallback RPC.`, error);
-          return await fallbackValue.apply(fallback, args);
+          return await callRpcWithSharedLimiter(
+            `fallback Connection.${String(prop)}()`,
+            () => fallbackValue.apply(fallback, args),
+            limiter,
+            bucketName,
+          );
         }
       };
     },
@@ -842,6 +932,8 @@ export class FleetRentalBot {
   private blockhashRefreshTimer: NodeJS.Timeout | null = null;
   private blockhashRefreshInFlight: Promise<CachedBlockhash> | null = null;
   private aggressiveRunSequence = 0;
+  private readonly sharedAggressiveLimiter = new RpcLimiter();
+  private sharedAggressiveExclusiveHolders = 0;
 
   constructor(
     private readonly config: FleetRentalBotConfig,
@@ -849,7 +941,12 @@ export class FleetRentalBot {
   ) {
     const secretKeyBytes = decodeSecret(config.hotWalletSecret);
     this.wallet = secretKeyBytes.length === 32 ? Keypair.fromSeed(secretKeyBytes) : Keypair.fromSecretKey(secretKeyBytes);
-    this.connection = createFailoverConnection(config.rpcUrl, config.rpcUrlFallback, this.logger);
+    this.connection = createFailoverConnection(
+      config.rpcUrl,
+      config.rpcUrlFallback,
+      this.logger,
+      () => this.config.useRpcLimiter,
+    );
     this.provider = new AnchorProvider(this.connection, new Wallet(this.wallet), { commitment: 'confirmed' });
     this.srslyProgramId = new PublicKey(config.srslyProgramId);
 
@@ -901,6 +998,7 @@ export class FleetRentalBot {
     for (const timer of this.aggressiveStartTimers.values()) clearTimeout(timer);
     for (const timer of this.aggressiveIntervalTimers.values()) clearInterval(timer);
     for (const timer of this.aggressivePrepareTimers.values()) clearTimeout(timer);
+    const heldSharedExclusive = [...this.aggressiveRuntimeByRule.values()].some((runtime) => runtime.sharedExclusiveHeld);
     if (this.dailyRestartTimer) {
       clearTimeout(this.dailyRestartTimer);
       this.dailyRestartTimer = null;
@@ -915,6 +1013,10 @@ export class FleetRentalBot {
     this.dailyRestartPending = false;
     this.stopBlockhashRefresh();
     this.successfulRentKeys.clear();
+    this.sharedAggressiveExclusiveHolders = 0;
+    if (heldSharedExclusive && this.config.useRpcLimiter && !this.config.dryRun) {
+      await this.sharedAggressiveLimiter.releaseExclusive();
+    }
   }
 
   async getStatusSnapshot(): Promise<FleetRentalBotStatus> {
@@ -1354,7 +1456,57 @@ export class FleetRentalBot {
     return this.refreshBlockhash();
   }
 
+  private async acquireAggressiveExclusive(rule: FleetRentalRuleConfig, stopAtMs: number): Promise<boolean> {
+    if (!this.config.useRpcLimiter || this.config.dryRun) return true;
+
+    const durationMs = Math.max(1, stopAtMs - Date.now());
+    const label = `fleet:aggressive:${this.config.instanceName || rule.fleetName}`;
+    const result = await this.sharedAggressiveLimiter.acquireExclusive(label, durationMs, {
+      priorityHint: rule.maxRentPricePerDay,
+    });
+    if (!result.ok) {
+      const holderLabel = result.reason === 'preempted' ? result.holder?.label : '';
+      const holder = holderLabel ? ` holder=${holderLabel}` : '';
+      const message = `Aggressive sending skipped for ${rule.fleetName}: shared RPC limiter exclusive ${result.reason}.${holder}`;
+      this.logger.warn(message);
+      this.runtimeByRule.set(getRuleKey(rule), {
+        ...(this.runtimeByRule.get(getRuleKey(rule)) ?? this.createInitialRuntimeState()),
+        status: 'blocked',
+        note: message,
+        lastActionAt: new Date().toISOString(),
+      });
+      await this.appendLog({
+        event: 'AGGRESSIVE_PREEMPTED',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        message,
+      });
+      return false;
+    }
+
+    this.sharedAggressiveExclusiveHolders += 1;
+    return true;
+  }
+
+  private async releaseAggressiveExclusive(rule: FleetRentalRuleConfig): Promise<void> {
+    if (!this.config.useRpcLimiter || this.config.dryRun) return;
+    this.sharedAggressiveExclusiveHolders = Math.max(0, this.sharedAggressiveExclusiveHolders - 1);
+    if (this.sharedAggressiveExclusiveHolders > 0) return;
+    try {
+      await this.sharedAggressiveLimiter.releaseExclusive();
+    } catch (err) {
+      this.logger.warn(`Could not release shared aggressive RPC limiter exclusive for ${rule.fleetName}:`, err);
+    }
+  }
+
   private beginAggressiveSending(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
+    void this.beginAggressiveSendingWithExclusive(rule, rentEndsAt).catch((err: unknown) => {
+      this.logger.error(`Could not start aggressive sending for ${rule.fleetName}:`, err);
+    });
+  }
+
+  private async beginAggressiveSendingWithExclusive(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
     const key = getRuleKey(rule);
     if (!this.running || !rule.enabled || this.aggressiveIntervalTimers.has(key)) return;
 
@@ -1388,6 +1540,12 @@ export class FleetRentalBot {
       return;
     }
 
+    const sharedExclusiveHeld = await this.acquireAggressiveExclusive(rule, stopAtMs);
+    if (!sharedExclusiveHeld) {
+      this.scheduledAggressiveWindows.delete(key);
+      return;
+    }
+
     const sendIntervalMs = this.config.useHeliusSender
       ? this.config.aggressiveSendIntervalMs
       : NORMAL_RPC_AGGRESSIVE_SEND_INTERVAL_MS;
@@ -1401,6 +1559,7 @@ export class FleetRentalBot {
       lastStatusCheckAtMs: 0,
       statusCheckInFlight: false,
       lastSubmittedSignature: null,
+      sharedExclusiveHeld,
     };
     this.aggressiveRuntimeByRule.set(key, runtime);
     this.startBlockhashRefresh();
@@ -1457,12 +1616,17 @@ export class FleetRentalBot {
     const timer = this.aggressiveIntervalTimers.get(key);
     if (timer) clearInterval(timer);
     this.aggressiveIntervalTimers.delete(key);
-    const attempts = this.aggressiveRuntimeByRule.get(key)?.attempts ?? 0;
+    const runtime = this.aggressiveRuntimeByRule.get(key);
+    const attempts = runtime?.attempts ?? 0;
+    const shouldReleaseExclusive = Boolean(runtime?.sharedExclusiveHeld);
     this.aggressiveRuntimeByRule.delete(key);
     this.scheduledAggressiveWindows.delete(key);
     this.preparedRentByRule.delete(key);
     if (this.aggressiveIntervalTimers.size === 0) {
       this.stopBlockhashRefresh();
+    }
+    if (shouldReleaseExclusive) {
+      void this.releaseAggressiveExclusive(rule);
     }
     const message = `Aggressive sending stopped for ${rule.fleetName}: ${reason}; attempts=${attempts}`;
     this.logger.info(message);
