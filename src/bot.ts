@@ -515,7 +515,8 @@ function createFailoverConnection(
   useSharedLimiter: () => boolean,
   metricsProfile: string,
 ): Connection {
-  const primary = new Connection(primaryUrl, { commitment: 'confirmed' });
+  const connectionConfig = { commitment: 'confirmed' as const, disableRetryOnRateLimit: true };
+  const primary = new Connection(primaryUrl, connectionConfig);
   const limiter = new SharedRpcRequestLimiter(logger, useSharedLimiter, 'Fleet Rental Bot', metricsProfile);
   if (!fallbackUrl || fallbackUrl === primaryUrl) {
     return new Proxy(primary, {
@@ -532,7 +533,7 @@ function createFailoverConnection(
     }) as Connection;
   }
 
-  const fallback = new Connection(fallbackUrl, { commitment: 'confirmed' });
+  const fallback = new Connection(fallbackUrl, connectionConfig);
   return new Proxy(primary, {
     get(target, prop, receiver) {
       const primaryValue = Reflect.get(target, prop, receiver);
@@ -837,7 +838,7 @@ export async function resolveRentalRuleDetails(input: {
   fleetAccount?: string | null;
   rentalContract?: string | null;
 }): Promise<ResolvedRentalRuleDetails> {
-  const connection = new Connection(input.rpcUrl, { commitment: 'confirmed' });
+  const connection = new Connection(input.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true });
   const srslyProgramId = new PublicKey(input.srslyProgramId || DEFAULT_SRSLY_PROGRAM_ID);
   const provider = new AnchorProvider(connection, new Wallet(Keypair.generate()), { commitment: 'confirmed' });
   const idl = await fetchCachedSrslyIdl(srslyProgramId, provider);

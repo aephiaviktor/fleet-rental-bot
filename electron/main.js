@@ -799,7 +799,10 @@ ipcMain.handle('wallet:lookup', async (_event, { hotWalletPublicKey }) => {
   try {
     const config = await getEffectiveBotInputConfig();
     console.error('[wallet:lookup] RPC_URL =', config.RPC_URL);
-    const connection = new Connection(config.RPC_URL || 'https://api.mainnet-beta.solana.com', 'confirmed');
+    const connection = new Connection(config.RPC_URL || 'https://api.mainnet-beta.solana.com', {
+      commitment: 'confirmed',
+      disableRetryOnRateLimit: true,
+    });
     const walletPK = new PublicKey(hotWalletPublicKey);
     const PLAYER_PROFILE_PROGRAM_ID = 'pprofELXjL5Kck7Jn5hCpwAL82DpTkSYBENzahVtbc9';
     // Profile PDA: seeds = ['profile', wallet_pubkey]
