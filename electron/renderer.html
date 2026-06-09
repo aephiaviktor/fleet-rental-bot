@@ -89,9 +89,14 @@
                       Faction
                       <input name="INSTANCE_NAME" type="text" autocomplete="off" placeholder="e.g. PROFILE_NAME" readonly />
                     </label>
-                    <label>
+                    <label class="aephia-key-field">
                       Aephia API Key
-                      <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" />
+                      <div class="sensitive-input-row">
+                        <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" spellcheck="false" />
+                        <button id="aephia-key-reveal-btn" type="button" class="sensitive-row-btn" disabled>Reveal</button>
+                        <button id="aephia-key-clear-btn" type="button" class="sensitive-row-btn" disabled>Clear</button>
+                      </div>
+                      <span id="aephia-key-status" class="sensitive-status" data-state="empty">No Aephia API key set</span>
                     </label>
                     <label>
                       RPC URL

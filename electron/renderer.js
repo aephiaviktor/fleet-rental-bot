@@ -6,6 +6,10 @@ const saveBtn = document.getElementById('save-btn');
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
 const toggleSensitiveBtn = document.getElementById('toggle-sensitive-btn');
+const aephiaKeyInput = form.elements['AEPHIA_API_KEY'];
+const aephiaKeyRevealBtn = document.getElementById('aephia-key-reveal-btn');
+const aephiaKeyClearBtn = document.getElementById('aephia-key-clear-btn');
+const aephiaKeyStatus = document.getElementById('aephia-key-status');
 const statusSummary = document.getElementById('status-summary');
 const ruleHealth = document.getElementById('rule-health');
 const recentActivity = document.getElementById('recent-activity');
@@ -322,10 +326,87 @@ function getRentalRulesFromForm() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Aephia API key handling.
+//
+// The stored Aephia API key is sensitive, so we keep the plaintext out of the
+// DOM by default. The input value is only ever one of:
+//   - '' (empty: nothing typed, no reveal active)
+//   - aephiaKeyState.stored (only while the user has clicked Reveal)
+//
+// On load, we copy the real key into aephiaKeyState.stored and render a masked
+// placeholder + status. On save, an empty input preserves the stored key
+// (so opening the page and clicking Save without touching the field is a
+// no-op). Typing a new value replaces the key. Clicking Clear marks the key
+// for removal on next save; clicking Restore cancels that.
+// ---------------------------------------------------------------------------
+const aephiaKeyState = {
+  stored: '',
+  cleared: false,
+};
+
+function maskAephiaKey(value) {
+  const v = String(value ?? '');
+  if (!v) return '';
+  if (v.length <= 8) return '•'.repeat(v.length);
+  return '•'.repeat(v.length - 4) + v.slice(-4);
+}
+
+function updateAephiaKeyUi() {
+  if (!aephiaKeyInput || !aephiaKeyStatus) return;
+  const stored = aephiaKeyState.stored;
+  const cleared = aephiaKeyState.cleared;
+  const inputVal = String(aephiaKeyInput.value ?? '').trim();
+  const hasInputValue = inputVal.length > 0;
+
+  let label;
+  let state;
+  if (cleared) {
+    label = 'Aephia API key will be removed on save';
+    state = 'cleared';
+  } else if (stored && hasInputValue && inputVal !== stored) {
+    label = 'Aephia API key will be replaced on save';
+    state = 'replaced';
+  } else if (stored && hasInputValue) {
+    label = 'Aephia API key will be saved (unchanged)';
+    state = 'unchanged';
+  } else if (stored) {
+    label = `Aephia API key configured · ${maskAephiaKey(stored)}`;
+    state = 'configured';
+  } else if (hasInputValue) {
+    label = 'New Aephia API key will be saved';
+    state = 'new';
+  } else {
+    label = 'No Aephia API key set';
+    state = 'empty';
+  }
+  aephiaKeyStatus.textContent = label;
+  aephiaKeyStatus.dataset.state = state;
+
+  aephiaKeyInput.placeholder = stored && !cleared
+    ? `Configured (${maskAephiaKey(stored)}) — type to replace`
+    : 'Paste a new Aephia API key';
+
+  aephiaKeyRevealBtn.disabled = !stored || cleared;
+  aephiaKeyRevealBtn.textContent = aephiaKeyInput.value === stored && stored ? 'Hide' : 'Reveal';
+  aephiaKeyRevealBtn.dataset.state = aephiaKeyRevealBtn.textContent === 'Hide' ? 'revealed' : 'hidden';
+
+  aephiaKeyClearBtn.disabled = !stored;
+  aephiaKeyClearBtn.textContent = cleared ? 'Restore' : 'Clear';
+  aephiaKeyClearBtn.dataset.state = cleared ? 'cleared' : 'active';
+}
+
 function setConfigValues(config) {
   for (const key of CONFIG_KEYS) {
     const input = form.elements[key];
     if (!input) continue;
+    if (key === 'AEPHIA_API_KEY') {
+      aephiaKeyState.stored = String(config?.[key] ?? '').trim();
+      aephiaKeyState.cleared = false;
+      aephiaKeyInput.value = '';
+      updateAephiaKeyUi();
+      continue;
+    }
     if (input.type === 'checkbox') {
       input.checked = parseBoolean(config?.[key]);
     } else {
@@ -334,6 +415,7 @@ function setConfigValues(config) {
   }
   syncHeliusSenderTipMinimum();
   updateRpcLimiterModeTone();
+  updateAephiaKeyUi();
 }
 
 function updateRpcLimiterModeTone() {
@@ -371,7 +453,20 @@ function getConfigValues() {
   const config = {};
   for (const key of CONFIG_KEYS) {
     const input = form.elements[key];
-    if (input) config[key] = input.type === 'checkbox' ? String(input.checked) : input.value;
+    if (!input) continue;
+    if (key === 'AEPHIA_API_KEY') {
+      const inputVal = String(input.value ?? '').trim();
+      if (inputVal) {
+        config[key] = inputVal;
+      } else if (aephiaKeyState.cleared) {
+        config[key] = '';
+      } else {
+        // Empty input + stored key + not cleared = preserve the existing key.
+        config[key] = aephiaKeyState.stored;
+      }
+      continue;
+    }
+    config[key] = input.type === 'checkbox' ? String(input.checked) : input.value;
   }
   const useSender = form.elements['USE_HELIUS_SENDER']?.checked;
   config.USE_NORMAL_TXS = String(!useSender);
@@ -615,6 +710,38 @@ stopBtn.addEventListener('click', async () => {
 toggleSensitiveBtn.addEventListener('click', () => {
   form.classList.toggle('sensitive-hidden');
   toggleSensitiveBtn.textContent = form.classList.contains('sensitive-hidden') ? 'Show Sensitive Fields' : 'Hide Sensitive Fields';
+});
+
+aephiaKeyRevealBtn.addEventListener('click', () => {
+  if (!aephiaKeyState.stored || aephiaKeyState.cleared) return;
+  if (aephiaKeyInput.value === aephiaKeyState.stored) {
+    // Currently revealed — hide it.
+    aephiaKeyInput.value = '';
+  } else {
+    // Reveal the stored key in the input so it can be read or copied.
+    aephiaKeyInput.value = aephiaKeyState.stored;
+    aephiaKeyInput.focus();
+    aephiaKeyInput.select();
+  }
+  updateAephiaKeyUi();
+});
+
+aephiaKeyClearBtn.addEventListener('click', () => {
+  if (!aephiaKeyState.stored) return;
+  aephiaKeyState.cleared = !aephiaKeyState.cleared;
+  if (aephiaKeyState.cleared) {
+    // Wipe the input so the next save actually removes the key.
+    aephiaKeyInput.value = '';
+  }
+  updateAephiaKeyUi();
+});
+
+aephiaKeyInput.addEventListener('input', () => {
+  // Typing after Clear cancels the removal (user wants to replace, not delete).
+  if (aephiaKeyState.cleared && aephiaKeyInput.value) {
+    aephiaKeyState.cleared = false;
+  }
+  updateAephiaKeyUi();
 });
 
 window.botApi.onLog((payload) => {
