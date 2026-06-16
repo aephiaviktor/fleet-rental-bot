@@ -538,9 +538,7 @@ async function saveLocalSettings(payload) {
     }
   }
 
-  if (_profileName) {
-    filtered.INSTANCE_NAME = _profileName;
-  }
+  filtered.USE_RPC_LIMITER = 'false';
 
   filtered.RENTAL_RULE_ROWS = normalizeRentalRules(payload?.rentalRules ?? current.RENTAL_RULE_ROWS ?? []);
   await fs.mkdir(path.dirname(getSettingsPath()), { recursive: true });
@@ -584,6 +582,7 @@ async function getEffectiveEditableConfig() {
       config[key] = value;
     }
   }
+  config.USE_RPC_LIMITER = 'false';
 
   return config;
 }

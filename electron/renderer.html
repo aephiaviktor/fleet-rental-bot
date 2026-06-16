@@ -87,46 +87,20 @@
                   <div class="config-grid">
                     <label>
                       Faction
-                      <input name="INSTANCE_NAME" type="text" autocomplete="off" placeholder="e.g. PROFILE_NAME" readonly />
+                      <select name="INSTANCE_NAME" autocomplete="off">
+                        <option value="MUD">MUD</option>
+                        <option value="ONI">ONI</option>
+                        <option value="USTUR">USTUR</option>
+                      </select>
                     </label>
                     <label class="aephia-key-field">
                       Aephia API Key
-                      <div class="sensitive-input-row">
-                        <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" spellcheck="false" />
-                        <button id="aephia-key-reveal-btn" type="button" class="sensitive-row-btn" disabled>Reveal</button>
-                        <button id="aephia-key-clear-btn" type="button" class="sensitive-row-btn" disabled>Clear</button>
-                      </div>
-                      <span id="aephia-key-status" class="sensitive-status" data-state="empty">No Aephia API key set</span>
+                      <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" spellcheck="false" />
                     </label>
                     <label>
                       RPC URL
                       <input class="sensitive-field" name="RPC_URL" type="text" autocomplete="off" />
                     </label>
-                    <section class="config-section rpc-limiter-section">
-                      <label class="checkbox-row">
-                        <input name="USE_RPC_LIMITER" type="checkbox" />
-                        <span>Use RPC Limiter</span>
-                      </label>
-                      <label class="rpc-limiter-current-url">
-                        Current RPC Limiter URL
-                        <input class="sensitive-field" id="rpc-limiter-current-url" type="text" readonly autocomplete="off" />
-                      </label>
-                      <div class="rpc-limiter-state-row">
-                        <span>State: <strong id="rpc-limiter-state-path">—</strong></span>
-                        <span class="rpc-limiter-updated" id="rpc-limiter-updated"></span>
-                      </div>
-                      <div class="rpc-limiter-send-grid">
-                        <label>
-                          Requests / sec
-                          <input name="RPC_REQUESTS_PER_SECOND" type="text" autocomplete="off" />
-                        </label>
-                        <label>
-                          sendTransaction / sec
-                          <input name="RPC_TX_SEND_RATE_LIMIT_PER_SECOND" type="text" autocomplete="off" />
-                        </label>
-                      </div>
-                      <button id="send-rpc-limiter-btn" type="button">Send settings to RPC Limiter</button>
-                    </section>
                     <label>
                       Hot Wallet Secret
                       <textarea class="sensitive-field" name="HOT_WALLET_SECRET" rows="3"></textarea>
@@ -138,6 +112,14 @@
                     <label>
                       Managed Player Profile
                       <input class="sensitive-field" name="OWNER_PROFILE" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      Requests / sec
+                      <input name="RPC_REQUESTS_PER_SECOND" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      sendTransaction / sec
+                      <input name="RPC_TX_SEND_RATE_LIMIT_PER_SECOND" type="text" autocomplete="off" />
                     </label>
                     <label>
                       Aggressive Start Before End Seconds

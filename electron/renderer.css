@@ -200,56 +200,6 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
   align-items: start;
 }
 
-.rpc-limiter-section {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-}
-
-.rpc-limiter-current-url,
-.rpc-limiter-state-row,
-.rpc-limiter-send-grid,
-#send-rpc-limiter-btn {
-  grid-column: 1 / -1;
-}
-
-.rpc-limiter-state-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.rpc-limiter-updated {
-  color: #93c5fd;
-}
-
-.rpc-limiter-send-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
-  padding: 0.75rem;
-  border: 1px solid rgba(38, 55, 85, 0.72);
-  border-radius: 10px;
-  background: rgba(8, 13, 24, 0.38);
-}
-
-.rpc-limiter-enabled #rpc-limiter-current-url,
-.rpc-limiter-disabled input[name='RPC_URL'],
-.rpc-limiter-disabled input[name='RPC_REQUESTS_PER_SECOND'],
-.rpc-limiter-disabled input[name='RPC_TX_SEND_RATE_LIMIT_PER_SECOND'] {
-  color: var(--text);
-  border-color: rgba(96, 165, 250, 0.55);
-}
-
-.rpc-limiter-disabled #rpc-limiter-current-url,
-.rpc-limiter-enabled input[name='RPC_URL'],
-.rpc-limiter-enabled input[name='RPC_REQUESTS_PER_SECOND'],
-.rpc-limiter-enabled input[name='RPC_TX_SEND_RATE_LIMIT_PER_SECOND'] {
-  color: var(--muted);
-  border-color: rgba(38, 55, 85, 0.7);
-}
-
 .checkbox-row {
   display: flex;
   align-items: flex-start;
@@ -301,71 +251,6 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
 
 .aephia-key-field {
   grid-column: 1 / -1;
-}
-.sensitive-input-row {
-  display: flex;
-  gap: 0.5rem;
-  align-items: stretch;
-}
-.sensitive-input-row input.sensitive-field {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.sensitive-row-btn {
-  flex: 0 0 auto;
-  border: 1px solid rgba(120, 145, 200, 0.45);
-  background: rgba(20, 30, 55, 0.7);
-  color: #cbd5f5;
-  border-radius: 10px;
-  padding: 0 0.85rem;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
-}
-.sensitive-row-btn:hover:not(:disabled) {
-  background: rgba(40, 55, 90, 0.85);
-  border-color: rgba(140, 170, 220, 0.7);
-  color: #e2e8f0;
-}
-.sensitive-row-btn:active:not(:disabled) {
-  background: rgba(55, 75, 120, 0.95);
-}
-.sensitive-row-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.sensitive-row-btn[data-state="revealed"] {
-  border-color: rgba(255, 184, 108, 0.6);
-  color: #ffd6a8;
-  background: rgba(255, 200, 140, 0.18);
-}
-.sensitive-row-btn[data-state="cleared"] {
-  border-color: rgba(220, 120, 120, 0.6);
-  color: #f4b8b8;
-  background: rgba(200, 80, 80, 0.18);
-}
-.sensitive-status {
-  font-size: 0.78rem;
-  color: var(--muted);
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  margin-top: 0.15rem;
-}
-.sensitive-status[data-state="configured"],
-.sensitive-status[data-state="unchanged"] {
-  color: #8fe3b5;
-}
-.sensitive-status[data-state="new"],
-.sensitive-status[data-state="replaced"] {
-  color: #ffd6a8;
-}
-.sensitive-status[data-state="cleared"] {
-  color: #f4b8b8;
-}
-.sensitive-status[data-state="empty"] {
-  color: var(--muted);
 }
 
 .rules-table-scroll { overflow-x: auto; }
