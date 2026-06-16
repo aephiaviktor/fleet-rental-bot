@@ -67,6 +67,9 @@ export const AGGRESSIVE_BLOCKHASH_PREWARM_MS = 2000;
 export const AGGRESSIVE_PREPARE_BEFORE_START_MS = 30000;
 export const AGGRESSIVE_STATUS_CHECK_INTERVAL_MS = 1200;
 export const AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS = 4;
+export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_INTERVAL_MS = 1000;
+export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_ATTEMPTS = 8;
+export const CONFIRMED_AVAILABILITY_WATCHDOG_INTERVAL_MS = 30000;
 export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
 export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
@@ -699,6 +702,10 @@ function extractDate(source: unknown, names: string[]): Date | null {
   return Number.isFinite(date.getTime()) ? date : null;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getRuleKey(rule: FleetRentalRuleConfig): string {
   return `${rule.fleetAccount}:${rule.rentalContract}`;
 }
@@ -941,6 +948,12 @@ export class FleetRentalBot {
   private readonly preparedRentByRule = new Map<string, PreparedRentTransaction>();
   private readonly preparingRentByRule = new Map<string, Promise<PreparedRentTransaction>>();
   private readonly missedAggressiveWindowKeys = new Set<string>();
+  private readonly rentalContractSubscriptionIds = new Map<string, number>();
+  private readonly observedRentEndMsByRule = new Map<string, number>();
+  private readonly confirmedAvailabilityTriggeredEpochByRule = new Map<string, number>();
+  private readonly confirmedAvailabilityInFlightByRule = new Set<string>();
+  private confirmedAvailabilityWatchdogTimer: NodeJS.Timeout | null = null;
+  private confirmedAvailabilityWatchdogInFlight = false;
   private dailyRestartTimer: NodeJS.Timeout | null = null;
   private dailyRestartPending = false;
   private blockhashCache: CachedBlockhash | null = null;
@@ -994,6 +1007,8 @@ export class FleetRentalBot {
     this.logger.info(`Hot wallet: ${this.wallet.publicKey.toBase58()}`);
     this.logger.info(`SRSLY program: ${this.srslyProgramId.toBase58()}`);
     this.logger.info(`Managing ${this.config.rentalRules.length} rental rule(s). Dry run: ${this.config.dryRun ? 'yes' : 'no'}.`);
+    await this.startConfirmedAvailabilitySubscriptions();
+    this.startConfirmedAvailabilityWatchdog();
 
     // Immediate check: rent any available enabled fleets right now, before entering the loop
     for (const rule of this.config.rentalRules) {
@@ -1007,6 +1022,8 @@ export class FleetRentalBot {
 
   async stop(): Promise<void> {
     this.running = false;
+    this.stopConfirmedAvailabilityWatchdog();
+    await this.stopConfirmedAvailabilitySubscriptions();
     if (this.loopTimer) {
       clearTimeout(this.loopTimer);
       this.loopTimer = null;
@@ -1026,6 +1043,9 @@ export class FleetRentalBot {
     this.scheduledAggressiveWindows.clear();
     this.preparedRentByRule.clear();
     this.preparingRentByRule.clear();
+    this.observedRentEndMsByRule.clear();
+    this.confirmedAvailabilityTriggeredEpochByRule.clear();
+    this.confirmedAvailabilityInFlightByRule.clear();
     this.dailyRestartPending = false;
     this.stopBlockhashRefresh();
     this.successfulRentKeys.clear();
@@ -1204,6 +1224,256 @@ export class FleetRentalBot {
     return nearest;
   }
 
+  private async startConfirmedAvailabilitySubscriptions(): Promise<void> {
+    for (const rule of this.config.rentalRules) {
+      if (!rule.enabled || this.rentalContractSubscriptionIds.has(rule.rentalContract)) continue;
+
+      const rentalContract = rule.rentalContract;
+      try {
+        const subscriptionId = await this.connection.onAccountChange(
+          new PublicKey(rentalContract),
+          () => {
+            void this.handleConfirmedAvailabilityAccountChange(rentalContract).catch((err: unknown) => {
+              this.logger.warn(`Confirmed availability check failed for rental contract ${rentalContract}:`, err);
+            });
+          },
+          'confirmed',
+        );
+        this.rentalContractSubscriptionIds.set(rentalContract, subscriptionId);
+        const message = `Confirmed availability watcher subscribed for ${rule.fleetName}`;
+        this.logger.info(message);
+        await this.appendLog({
+          event: 'CONFIRMED_AVAILABILITY_SUBSCRIBED',
+          label: rule.fleetName,
+          fleetAccount: rule.fleetAccount,
+          rentalContract,
+          subscriptionId,
+          message,
+        });
+      } catch (err) {
+        const message = `Could not subscribe confirmed availability watcher for ${rule.fleetName}: ${formatError(err)}`;
+        this.logger.warn(message);
+        await this.appendLog({
+          event: 'CONFIRMED_AVAILABILITY_SUBSCRIBE_FAILED',
+          label: rule.fleetName,
+          fleetAccount: rule.fleetAccount,
+          rentalContract,
+          message,
+        });
+      }
+    }
+  }
+
+  private async stopConfirmedAvailabilitySubscriptions(): Promise<void> {
+    const entries = [...this.rentalContractSubscriptionIds.entries()];
+    this.rentalContractSubscriptionIds.clear();
+    for (const [rentalContract, subscriptionId] of entries) {
+      try {
+        await this.connection.removeAccountChangeListener(subscriptionId);
+      } catch (err) {
+        this.logger.warn(`Could not remove confirmed availability watcher for ${rentalContract}:`, err);
+      }
+    }
+  }
+
+  private startConfirmedAvailabilityWatchdog(): void {
+    if (this.confirmedAvailabilityWatchdogTimer) return;
+    this.confirmedAvailabilityWatchdogTimer = setInterval(() => {
+      void this.runConfirmedAvailabilityWatchdog().catch((err: unknown) => {
+        this.logger.warn('Confirmed availability watchdog failed:', err);
+      });
+    }, CONFIRMED_AVAILABILITY_WATCHDOG_INTERVAL_MS);
+  }
+
+  private stopConfirmedAvailabilityWatchdog(): void {
+    if (this.confirmedAvailabilityWatchdogTimer) {
+      clearInterval(this.confirmedAvailabilityWatchdogTimer);
+      this.confirmedAvailabilityWatchdogTimer = null;
+    }
+    this.confirmedAvailabilityWatchdogInFlight = false;
+  }
+
+  private async runConfirmedAvailabilityWatchdog(): Promise<void> {
+    if (!this.running || this.confirmedAvailabilityWatchdogInFlight) return;
+    this.confirmedAvailabilityWatchdogInFlight = true;
+    try {
+      await this.startConfirmedAvailabilitySubscriptions();
+      const rentalContracts = new Set(
+        this.config.rentalRules
+          .filter((rule) => rule.enabled)
+          .map((rule) => rule.rentalContract),
+      );
+      for (const rentalContract of rentalContracts) {
+        try {
+          await this.handleConfirmedAvailabilityAccountChange(rentalContract);
+        } catch (err) {
+          this.logger.warn(`Confirmed availability watchdog check failed for ${rentalContract}:`, err);
+        }
+      }
+    } finally {
+      this.confirmedAvailabilityWatchdogInFlight = false;
+    }
+  }
+
+  private async handleConfirmedAvailabilityAccountChange(rentalContract: string): Promise<void> {
+    if (!this.running) return;
+    const matchingRules = this.config.rentalRules.filter((rule) => rule.enabled && rule.rentalContract === rentalContract);
+    if (matchingRules.length === 0) return;
+
+    let snapshot: RentalContractSnapshot;
+    try {
+      snapshot = await this.fetchRentalContractSnapshot(rentalContract);
+    } catch (err) {
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABILITY_FETCH_FAILED',
+        rentalContract,
+        message: formatError(err),
+      });
+      throw err;
+    }
+
+    for (const rule of matchingRules) {
+      this.rememberObservedRentEnd(rule, snapshot);
+      if (!this.isSnapshotDue(snapshot)) continue;
+      await this.maybeTriggerConfirmedAvailabilityRent(rule, snapshot);
+    }
+  }
+
+  private rememberObservedRentEnd(rule: FleetRentalRuleConfig, snapshot: RentalContractSnapshot): void {
+    const endsAtMs = snapshot.endsAt?.getTime();
+    if (endsAtMs != null && Number.isFinite(endsAtMs)) {
+      this.observedRentEndMsByRule.set(getRuleKey(rule), endsAtMs);
+    }
+  }
+
+  private isSnapshotDue(snapshot: RentalContractSnapshot): boolean {
+    const endsAtMs = snapshot.endsAt?.getTime() ?? null;
+    return endsAtMs == null || endsAtMs <= Date.now();
+  }
+
+  private async maybeTriggerConfirmedAvailabilityRent(rule: FleetRentalRuleConfig, snapshot: RentalContractSnapshot): Promise<void> {
+    const key = getRuleKey(rule);
+    if (!this.running || !rule.enabled || this.successfulRentKeys.has(key)) return;
+    if (this.confirmedAvailabilityInFlightByRule.has(key)) return;
+
+    const previousRentEndMs = this.observedRentEndMsByRule.get(key) ?? 0;
+    const triggeredEpochMs = this.confirmedAvailabilityTriggeredEpochByRule.get(key);
+    if (triggeredEpochMs === previousRentEndMs) return;
+
+    if (snapshot.pricePerDay == null) {
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_SKIP_UNKNOWN_PRICE',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        message: `Confirmed availability skipped for ${rule.fleetName}: could not infer price`,
+      });
+      return;
+    }
+    if (snapshot.pricePerDay > rule.maxRentPricePerDay) {
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_SKIP_PRICE',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        pricePerDay: snapshot.pricePerDay,
+        message: `Confirmed availability skipped for ${rule.fleetName}: price ${snapshot.pricePerDay} > max ${rule.maxRentPricePerDay}`,
+      });
+      return;
+    }
+    if (snapshot.toClose) {
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_SKIP_CLOSING',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        message: `Confirmed availability skipped for ${rule.fleetName}: rental contract is closing`,
+      });
+      return;
+    }
+
+    this.confirmedAvailabilityTriggeredEpochByRule.set(key, previousRentEndMs);
+    this.confirmedAvailabilityInFlightByRule.add(key);
+    const now = new Date().toISOString();
+    const triggerMessage = `Confirmed availability detected for ${rule.fleetName}; submitting rent transaction`;
+    this.logger.info(triggerMessage);
+    this.runtimeByRule.set(key, {
+      ...(this.runtimeByRule.get(key) ?? this.createInitialRuntimeState()),
+      status: 'renting',
+      currentPricePerDay: snapshot.pricePerDay,
+      rentEndsAt: snapshot.endsAt?.toISOString() ?? null,
+      secondsUntilEnd: snapshot.endsAt ? Math.floor((snapshot.endsAt.getTime() - Date.now()) / MS_PER_SECOND) : null,
+      lastActionAt: now,
+      note: triggerMessage,
+    });
+    await this.saveState();
+    await this.appendLog({
+      event: 'CONFIRMED_AVAILABLE_TRIGGER',
+      label: rule.fleetName,
+      fleetAccount: rule.fleetAccount,
+      rentalContract: rule.rentalContract,
+      pricePerDay: snapshot.pricePerDay,
+      previousRentEndsAt: previousRentEndMs > 0 ? new Date(previousRentEndMs).toISOString() : null,
+      message: triggerMessage,
+    });
+
+    if (this.config.dryRun) {
+      this.confirmedAvailabilityInFlightByRule.delete(key);
+      await this.appendLog({
+        event: 'DRY_RUN_CONFIRMED_AVAILABLE_RENT',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        pricePerDay: snapshot.pricePerDay,
+        message: `Dry run: would rent ${rule.fleetName} after confirmed availability`,
+      });
+      return;
+    }
+
+    try {
+      const prepared = await this.prepareRentForAggressive(rule);
+      const priorityFee = this.config.heliusPriorityFeeMaxMicroLamports;
+      const submission = await this.signAndSubmitInstructions(prepared.instructions, AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS, {
+        preferCachedBlockhash: true,
+        fixedPriorityFeeMicroLamports: priorityFee,
+      });
+      this.runtimeByRule.set(key, {
+        ...(this.runtimeByRule.get(key) ?? this.createInitialRuntimeState()),
+        lastTx: submission.signature,
+        note: `Confirmed availability transaction submitted: ${submission.signature}`,
+      });
+      await this.saveState();
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_TX_SUBMITTED',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        tx: submission.signature,
+        priorityFeeMicroLamports: priorityFee,
+        message: `Confirmed availability transaction submitted: ${submission.signature} (${priorityFee} microLamports/CU)`,
+      });
+      void this.checkConfirmedAvailabilityOutcome(rule, previousRentEndMs, submission.signature).catch((err: unknown) => {
+        this.logger.warn(`Confirmed availability outcome check failed for ${rule.fleetName}:`, err);
+      });
+    } catch (err) {
+      this.confirmedAvailabilityInFlightByRule.delete(key);
+      this.runtimeByRule.set(key, {
+        ...(this.runtimeByRule.get(key) ?? this.createInitialRuntimeState()),
+        status: 'error',
+        lastActionAt: new Date().toISOString(),
+        note: formatError(err),
+      });
+      await this.saveState();
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_TX_FAILED',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        message: formatError(err),
+      });
+    }
+  }
+
   private async processRule(rule: FleetRentalRuleConfig, options?: { force?: boolean }) {
     const key = getRuleKey(rule);
     const update = (patch: Partial<RuleRuntimeState>) => {
@@ -1225,6 +1495,7 @@ export class FleetRentalBot {
     let snapshot: RentalContractSnapshot | null = null;
     try {
       snapshot = await this.fetchRentalContractSnapshot(rule.rentalContract);
+      this.rememberObservedRentEnd(rule, snapshot);
       const secondsUntilEnd = snapshot.endsAt ? Math.floor((snapshot.endsAt.getTime() - Date.now()) / MS_PER_SECOND) : null;
       update({
         currentPricePerDay: snapshot.pricePerDay,
@@ -1703,6 +1974,7 @@ export class FleetRentalBot {
     let snapshot: RentalContractSnapshot;
     try {
       snapshot = await this.fetchRentalContractSnapshot(rule.rentalContract);
+      this.rememberObservedRentEnd(rule, snapshot);
     } catch (err) {
       this.logger.warn(`Aggressive status check failed for ${rule.fleetName}:`, err);
       return;
@@ -1732,6 +2004,66 @@ export class FleetRentalBot {
     }
   }
 
+  private async checkConfirmedAvailabilityOutcome(rule: FleetRentalRuleConfig, previousRentEndMs: number, signature: string): Promise<void> {
+    const key = getRuleKey(rule);
+    try {
+      for (let attempt = 1; attempt <= CONFIRMED_AVAILABILITY_OUTCOME_CHECK_ATTEMPTS; attempt += 1) {
+        await delay(CONFIRMED_AVAILABILITY_OUTCOME_CHECK_INTERVAL_MS);
+        if (!this.running || this.successfulRentKeys.has(key)) return;
+
+        let snapshot: RentalContractSnapshot;
+        try {
+          snapshot = await this.fetchRentalContractSnapshot(rule.rentalContract);
+          this.rememberObservedRentEnd(rule, snapshot);
+        } catch (err) {
+          this.logger.warn(`Confirmed availability status check failed for ${rule.fleetName}:`, err);
+          continue;
+        }
+
+        const endsAtMs = snapshot.endsAt?.getTime() ?? null;
+        const hasNewRentalEnd = endsAtMs != null && endsAtMs > previousRentEndMs + MS_PER_SECOND && endsAtMs > Date.now();
+        if (snapshot.rentedByYou && hasNewRentalEnd) {
+          await this.recordRentSuccessful(rule, signature, snapshot.pricePerDay);
+          return;
+        }
+        if (hasNewRentalEnd) {
+          const message = `Confirmed availability rent stopped for ${rule.fleetName}: fleet was rented by someone else`;
+          this.runtimeByRule.set(key, {
+            ...(this.runtimeByRule.get(key) ?? this.createInitialRuntimeState()),
+            status: 'unavailable',
+            currentPricePerDay: snapshot.pricePerDay,
+            rentEndsAt: snapshot.endsAt?.toISOString() ?? null,
+            secondsUntilEnd: Math.max(0, Math.floor((endsAtMs - Date.now()) / MS_PER_SECOND)),
+            lastActionAt: new Date().toISOString(),
+            lastTx: signature,
+            note: message,
+          });
+          await this.saveState();
+          await this.appendLog({
+            event: 'CONFIRMED_AVAILABLE_RENTED_BY_OTHER',
+            label: rule.fleetName,
+            fleetAccount: rule.fleetAccount,
+            rentalContract: rule.rentalContract,
+            tx: signature,
+            message,
+          });
+          return;
+        }
+      }
+
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_OUTCOME_UNKNOWN',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        tx: signature,
+        message: `Confirmed availability outcome still unknown for ${rule.fleetName}`,
+      });
+    } finally {
+      this.confirmedAvailabilityInFlightByRule.delete(key);
+    }
+  }
+
   private async recordRentSuccessful(rule: FleetRentalRuleConfig, signature: string, pricePerDay?: number | null) {
     const key = getRuleKey(rule);
     if (this.successfulRentKeys.has(key)) return;
@@ -1740,6 +2072,7 @@ export class FleetRentalBot {
     let refreshedSnapshot: RentalContractSnapshot | null = null;
     try {
       refreshedSnapshot = await this.fetchRentalContractSnapshot(rule.rentalContract);
+      this.rememberObservedRentEnd(rule, refreshedSnapshot);
     } catch (err) {
       this.logger.warn(`Could not refresh rental end after success for ${rule.fleetName}:`, err);
     }
