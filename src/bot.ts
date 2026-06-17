@@ -70,6 +70,7 @@ export const AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS = 4;
 export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_INTERVAL_MS = 1000;
 export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_ATTEMPTS = 8;
 export const CONFIRMED_AVAILABILITY_WATCHDOG_INTERVAL_MS = 30000;
+export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
 export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
 export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
@@ -952,6 +953,7 @@ export class FleetRentalBot {
   private readonly observedRentEndMsByRule = new Map<string, number>();
   private readonly confirmedAvailabilityTriggeredEpochByRule = new Map<string, number>();
   private readonly confirmedAvailabilityInFlightByRule = new Set<string>();
+  private readonly confirmedAvailabilityDecodeFailureCache = new Map<string, { expiresAt: number; message: string }>();
   private confirmedAvailabilityWatchdogTimer: NodeJS.Timeout | null = null;
   private confirmedAvailabilityWatchdogInFlight = false;
   private dailyRestartTimer: NodeJS.Timeout | null = null;
@@ -2240,6 +2242,14 @@ export class FleetRentalBot {
   }
 
   private async fetchRentalContractSnapshot(rentalContract: string): Promise<RentalContractSnapshot> {
+    const cachedDecodeFailure = this.confirmedAvailabilityDecodeFailureCache.get(rentalContract);
+    if (cachedDecodeFailure) {
+      if (cachedDecodeFailure.expiresAt > Date.now()) {
+        throw new Error(cachedDecodeFailure.message);
+      }
+      this.confirmedAvailabilityDecodeFailureCache.delete(rentalContract);
+    }
+
     const program = await this.getSrslyProgram();
     const pubkey = new PublicKey(rentalContract);
 
@@ -2278,6 +2288,7 @@ export class FleetRentalBot {
           }
         }
 
+        this.confirmedAvailabilityDecodeFailureCache.delete(rentalContract);
         return { pricePerDay, endsAt, rentedByYou, toClose: Boolean((contract as Record<string, unknown>).toClose), rawAccountType: 'ContractState', raw: contract };
       } catch {
         // Fall through to generic account probing below.
@@ -2297,13 +2308,19 @@ export class FleetRentalBot {
           extractFirstNumber(raw, ['rate', 'pricePerDay', 'rentPricePerDay', 'dailyRentPrice', 'dailyPrice', 'priceDaily', 'price', 'amountPerDay']),
         );
         const endsAt = extractDate(raw, ['endTime', 'rentEndsAt', 'rentalEndsAt', 'endsAt', 'expirationTime', 'expiresAt', 'endTimestamp']);
+        this.confirmedAvailabilityDecodeFailureCache.delete(rentalContract);
         return { pricePerDay, endsAt, rentedByYou: false, toClose: Boolean((raw as Record<string, unknown>).toClose), rawAccountType: accountName, raw };
       } catch {
         // Try the next possible account type.
       }
     }
 
-    throw new Error(`Could not decode rental contract ${rentalContract} with SRSLY IDL account types: ${accountNames.join(', ') || 'none'}`);
+    const message = `Could not decode rental contract ${rentalContract} with SRSLY IDL account types: ${accountNames.join(', ') || 'none'}`;
+    this.confirmedAvailabilityDecodeFailureCache.set(rentalContract, {
+      expiresAt: Date.now() + CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS,
+      message,
+    });
+    throw new Error(message);
   }
 
   private async getSrslyProgram(): Promise<Program> {
