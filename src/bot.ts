@@ -75,6 +75,8 @@ export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
 export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
+export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
+export const APP_VERSION = '0.2.10';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -258,6 +260,19 @@ type CachedBlockhash = {
   blockhash: string;
   lastValidBlockHeight: number;
   fetchedAtMs: number;
+};
+
+type RpcCounterField = 'network' | 'fallback';
+type RpcMethodCounter = Record<RpcCounterField, number>;
+type RpcMethodCounterSnapshot = {
+  version: string;
+  profile: string;
+  pid: number;
+  timestamp: string;
+  intervalSeconds: number;
+  uptimeSeconds: number;
+  interval: Record<string, RpcMethodCounter>;
+  total: Record<string, RpcMethodCounter>;
 };
 
 type PreparedRentTransaction = {
@@ -518,10 +533,94 @@ function createFailoverConnection(
   logger: FleetRentalBotLogger,
   useSharedLimiter: () => boolean,
   metricsProfile: string,
+  recordRpcMethodCounters?: (snapshot: RpcMethodCounterSnapshot) => void,
 ): Connection {
   const connectionConfig = { commitment: 'confirmed' as const, disableRetryOnRateLimit: true };
   const primary = new Connection(primaryUrl, connectionConfig);
   const limiter = new SharedRpcRequestLimiter(logger, useSharedLimiter, 'Fleet Rental Bot', metricsProfile);
+  const rpcMethodCounters = new Map<string, RpcMethodCounter>();
+  const rpcIntervalMethodCounters = new Map<string, RpcMethodCounter>();
+  const rpcCounterStartedAtMs = Date.now();
+  let lastRpcMethodCounterResetAtMs = rpcCounterStartedAtMs;
+
+  const countRpcMethod = (method: string, field: RpcCounterField): void => {
+    for (const counters of [rpcMethodCounters, rpcIntervalMethodCounters]) {
+      const counter = counters.get(method) ?? { network: 0, fallback: 0 };
+      counter[field] += 1;
+      counters.set(method, counter);
+    }
+  };
+
+  const snapshotRpcMethodCounters = (counters: Map<string, RpcMethodCounter>): Record<string, RpcMethodCounter> => {
+    return Object.fromEntries(
+      [...counters.entries()]
+        .filter(([, counter]) => counter.network || counter.fallback)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, counter]) => [
+          name,
+          {
+            network: counter.network,
+            fallback: counter.fallback,
+          },
+        ]),
+    );
+  };
+
+  const clearRpcMethodCounters = (counters: Map<string, RpcMethodCounter>): void => {
+    for (const counter of counters.values()) {
+      counter.network = 0;
+      counter.fallback = 0;
+    }
+  };
+
+  const maybeLogRpcMethodCounters = (): void => {
+    const now = Date.now();
+    if (now - lastRpcMethodCounterResetAtMs < RPC_METHOD_COUNTER_LOG_INTERVAL_MS) return;
+    const interval = snapshotRpcMethodCounters(rpcIntervalMethodCounters);
+    const total = snapshotRpcMethodCounters(rpcMethodCounters);
+    const intervalParts = Object.entries(interval).map(([name, counter]) => `${name}=network:${counter.network},fallback:${counter.fallback}`);
+    const totalParts = Object.entries(total).map(([name, counter]) => `${name}=network:${counter.network},fallback:${counter.fallback}`);
+    if (intervalParts.length === 0 && totalParts.length === 0) {
+      lastRpcMethodCounterResetAtMs = now;
+      return;
+    }
+    const intervalSeconds = Math.max(1, Math.round((now - lastRpcMethodCounterResetAtMs) / 1000));
+    const uptimeSeconds = Math.max(1, Math.round((now - rpcCounterStartedAtMs) / 1000));
+    const snapshot: RpcMethodCounterSnapshot = {
+      version: APP_VERSION,
+      profile: metricsProfile,
+      pid: process.pid,
+      timestamp: new Date(now).toISOString(),
+      intervalSeconds,
+      uptimeSeconds,
+      interval,
+      total,
+    };
+    logger.info(
+      `RPC method counters v${APP_VERSION} profile=${metricsProfile} pid=${process.pid} ` +
+        `interval=${intervalSeconds}s uptime=${uptimeSeconds}s | interval ${intervalParts.join(' | ')} | total ${totalParts.join(' | ')}`,
+    );
+    recordRpcMethodCounters?.(snapshot);
+    clearRpcMethodCounters(rpcIntervalMethodCounters);
+    lastRpcMethodCounterResetAtMs = now;
+  };
+
+  const callCountedRpc = async <T>(
+    label: string,
+    invoke: () => Promise<T>,
+    bucketName: 'rpc:shared' | 'tx:shared',
+    method: string,
+    field: RpcCounterField,
+  ): Promise<T> => {
+    maybeLogRpcMethodCounters();
+    countRpcMethod(method, field);
+    try {
+      return await callRpcWithSharedLimiter(label, invoke, limiter, bucketName, method);
+    } finally {
+      maybeLogRpcMethodCounters();
+    }
+  };
+
   if (!fallbackUrl || fallbackUrl === primaryUrl) {
     return new Proxy(primary, {
       get(target, prop, receiver) {
@@ -531,7 +630,7 @@ function createFailoverConnection(
           const method = String(prop);
           const label = `Connection.${String(prop)}()`;
           const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
-          return callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName, method);
+          return callCountedRpc(label, () => primaryValue.apply(target, args), bucketName, method, 'network');
         };
       },
     }) as Connection;
@@ -549,15 +648,15 @@ function createFailoverConnection(
         const label = `Connection.${String(prop)}()`;
         const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
         try {
-          return await callRpcWithSharedLimiter(label, () => primaryValue.apply(target, args), limiter, bucketName, method);
+          return await callCountedRpc(label, () => primaryValue.apply(target, args), bucketName, method, 'network');
         } catch (error) {
           logger.warn(`Primary RPC failed for Connection.${String(prop)}(), trying fallback RPC.`, error);
-          return await callRpcWithSharedLimiter(
+          return await callCountedRpc(
             `fallback Connection.${String(prop)}()`,
             () => fallbackValue.apply(fallback, args),
-            limiter,
             bucketName,
             method,
+            'fallback',
           );
         }
       };
@@ -929,6 +1028,7 @@ export class FleetRentalBot {
   private readonly analysisPath: string;
   private readonly logFilePath: string;
   private readonly stateFilePath: string;
+  private readonly rpcCounterFilePath: string;
   private readonly runtimeByRule = new Map<string, RuleRuntimeState>();
   private running = false;
   private loopTimer: NodeJS.Timeout | null = null;
@@ -971,15 +1071,6 @@ export class FleetRentalBot {
   ) {
     const secretKeyBytes = decodeSecret(config.hotWalletSecret);
     this.wallet = secretKeyBytes.length === 32 ? Keypair.fromSeed(secretKeyBytes) : Keypair.fromSecretKey(secretKeyBytes);
-    this.connection = createFailoverConnection(
-      config.rpcUrl,
-      config.rpcUrlFallback,
-      this.logger,
-      () => this.config.useRpcLimiter,
-      this.config.instanceName || 'default',
-    );
-    this.provider = new AnchorProvider(this.connection, new Wallet(this.wallet), { commitment: 'confirmed' });
-    this.srslyProgramId = new PublicKey(config.srslyProgramId);
 
     // Prefix analysisDir with instance name when analysisDir is a bare name (relative path with no path separator).
     // e.g. instanceName="PROFILE_NAME" + analysisDir="analysis" -> "PROFILE_NAME-analysis"
@@ -992,6 +1083,20 @@ export class FleetRentalBot {
     this.analysisPath = path.resolve(process.cwd(), analysisDir);
     this.logFilePath = path.join(this.analysisPath, 'rental-log.jsonl');
     this.stateFilePath = path.join(this.analysisPath, 'bot-state.json');
+    this.rpcCounterFilePath = path.join(this.analysisPath, 'rpc-method-counters.jsonl');
+
+    this.connection = createFailoverConnection(
+      config.rpcUrl,
+      config.rpcUrlFallback,
+      this.logger,
+      () => this.config.useRpcLimiter,
+      this.config.instanceName || 'default',
+      (snapshot) => {
+        void this.appendRpcCounterSnapshot(snapshot);
+      },
+    );
+    this.provider = new AnchorProvider(this.connection, new Wallet(this.wallet), { commitment: 'confirmed' });
+    this.srslyProgramId = new PublicKey(config.srslyProgramId);
   }
 
   isRunning(): boolean {
@@ -2484,6 +2589,20 @@ export class FleetRentalBot {
       await fs.access(this.stateFilePath);
     } catch {
       await fs.writeFile(this.stateFilePath, JSON.stringify({}, null, 2), 'utf8');
+    }
+    try {
+      await fs.access(this.rpcCounterFilePath);
+    } catch {
+      await fs.writeFile(this.rpcCounterFilePath, '', 'utf8');
+    }
+  }
+
+  private async appendRpcCounterSnapshot(snapshot: RpcMethodCounterSnapshot) {
+    try {
+      await fs.mkdir(this.analysisPath, { recursive: true });
+      await fs.appendFile(this.rpcCounterFilePath, `${JSON.stringify(snapshot)}\n`, 'utf8');
+    } catch (err) {
+      this.logger.warn('Failed to write RPC method counter snapshot:', err);
     }
   }
 
