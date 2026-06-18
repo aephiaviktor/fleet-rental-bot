@@ -324,13 +324,9 @@ function getRentalRulesFromForm() {
   });
 }
 
-const aephiaKeyState = {
-  stored: '',
-};
-
 function updateAephiaKeyUi() {
   if (!aephiaKeyInput) return;
-  aephiaKeyInput.placeholder = 'Paste Aephia API key';
+  aephiaKeyInput.placeholder = 'No Aephia API key saved';
 }
 
 function setConfigValues(config) {
@@ -338,8 +334,7 @@ function setConfigValues(config) {
     const input = form.elements[key];
     if (!input) continue;
     if (key === 'AEPHIA_API_KEY') {
-      aephiaKeyState.stored = String(config?.[key] ?? '').trim();
-      aephiaKeyInput.value = '';
+      aephiaKeyInput.value = String(config?.[key] ?? '').trim();
       updateAephiaKeyUi();
       continue;
     }
@@ -390,13 +385,7 @@ function getConfigValues() {
     const input = form.elements[key];
     if (!input) continue;
     if (key === 'AEPHIA_API_KEY') {
-      const inputVal = String(input.value ?? '').trim();
-      if (inputVal) {
-        config[key] = inputVal;
-      } else {
-        // Empty input preserves the existing key.
-        config[key] = aephiaKeyState.stored;
-      }
+      config[key] = String(input.value ?? '').trim();
       continue;
     }
     if (key === 'INSTANCE_NAME') {
