@@ -70,13 +70,15 @@ export const AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS = 4;
 export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_INTERVAL_MS = 1000;
 export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_ATTEMPTS = 8;
 export const CONFIRMED_AVAILABILITY_WATCHDOG_INTERVAL_MS = 30000;
+export const CONFIRMED_AVAILABILITY_WATCHDOG_NEAR_END_MS = 2 * 60 * 1000;
+export const CONFIRMED_AVAILABILITY_WATCHDOG_UNKNOWN_END_INTERVAL_MS = 5 * 60 * 1000;
 export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
 export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
 export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.10';
+export const APP_VERSION = '0.2.12';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -1051,6 +1053,7 @@ export class FleetRentalBot {
   private readonly missedAggressiveWindowKeys = new Set<string>();
   private readonly rentalContractSubscriptionIds = new Map<string, number>();
   private readonly observedRentEndMsByRule = new Map<string, number>();
+  private readonly confirmedAvailabilityWatchdogLastPollAtMsByContract = new Map<string, number>();
   private readonly confirmedAvailabilityTriggeredEpochByRule = new Map<string, number>();
   private readonly confirmedAvailabilityInFlightByRule = new Set<string>();
   private readonly confirmedAvailabilityDecodeFailureCache = new Map<string, { expiresAt: number; message: string }>();
@@ -1151,6 +1154,7 @@ export class FleetRentalBot {
     this.preparedRentByRule.clear();
     this.preparingRentByRule.clear();
     this.observedRentEndMsByRule.clear();
+    this.confirmedAvailabilityWatchdogLastPollAtMsByContract.clear();
     this.confirmedAvailabilityTriggeredEpochByRule.clear();
     this.confirmedAvailabilityInFlightByRule.clear();
     this.dailyRestartPending = false;
@@ -1411,7 +1415,9 @@ export class FleetRentalBot {
           .map((rule) => rule.rentalContract),
       );
       for (const rentalContract of rentalContracts) {
+        if (!this.shouldPollConfirmedAvailabilityContract(rentalContract)) continue;
         try {
+          this.confirmedAvailabilityWatchdogLastPollAtMsByContract.set(rentalContract, Date.now());
           await this.handleConfirmedAvailabilityAccountChange(rentalContract);
         } catch (err) {
           this.logger.warn(`Confirmed availability watchdog check failed for ${rentalContract}:`, err);
@@ -1420,6 +1426,29 @@ export class FleetRentalBot {
     } finally {
       this.confirmedAvailabilityWatchdogInFlight = false;
     }
+  }
+
+  private shouldPollConfirmedAvailabilityContract(rentalContract: string): boolean {
+    const nowMs = Date.now();
+    const matchingRules = this.config.rentalRules.filter((rule) => rule.enabled && rule.rentalContract === rentalContract);
+    if (matchingRules.length === 0) return false;
+
+    let hasUnknownEnd = false;
+    for (const rule of matchingRules) {
+      const observedEndMs = this.observedRentEndMsByRule.get(getRuleKey(rule));
+      if (observedEndMs == null) {
+        hasUnknownEnd = true;
+        continue;
+      }
+      if (observedEndMs <= nowMs + CONFIRMED_AVAILABILITY_WATCHDOG_NEAR_END_MS) {
+        return true;
+      }
+    }
+
+    if (!hasUnknownEnd) return false;
+
+    const lastPollAtMs = this.confirmedAvailabilityWatchdogLastPollAtMsByContract.get(rentalContract) ?? 0;
+    return nowMs - lastPollAtMs >= CONFIRMED_AVAILABILITY_WATCHDOG_UNKNOWN_END_INTERVAL_MS;
   }
 
   private async handleConfirmedAvailabilityAccountChange(rentalContract: string): Promise<void> {
