@@ -78,7 +78,7 @@ export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.12';
+export const APP_VERSION = '0.2.13';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -195,7 +195,7 @@ export type FleetRentalRuleHealth = {
   durationDays: number;
   maxRentPricePerDay: number;
   comment: string;
-  status: 'disabled' | 'unknown' | 'waiting' | 'due' | 'renting' | 'rented' | 'unavailable' | 'blocked' | 'error';
+  status: 'disabled' | 'unknown' | 'waiting' | 'due' | 'pending' | 'renting' | 'rented' | 'unavailable' | 'blocked' | 'error';
   currentPricePerDay: number | null;
   rentEndsAt: string | null;
   secondsUntilEnd: number | null;
@@ -295,6 +295,7 @@ type ScheduledAggressiveWindow = {
 type RentalContractSnapshot = {
   pricePerDay: number | null;
   endsAt: Date | null;
+  hasCurrentRentalState: boolean;
   rentedByYou: boolean;
   toClose: boolean;
   rawAccountType: string | null;
@@ -1470,6 +1471,19 @@ export class FleetRentalBot {
 
     for (const rule of matchingRules) {
       this.rememberObservedRentEnd(rule, snapshot);
+      const endsAtMs = snapshot.endsAt?.getTime() ?? null;
+      if (snapshot.hasCurrentRentalState && endsAtMs != null && endsAtMs <= Date.now()) {
+        this.runtimeByRule.set(getRuleKey(rule), {
+          ...(this.runtimeByRule.get(getRuleKey(rule)) ?? this.createInitialRuntimeState()),
+          status: 'pending',
+          currentPricePerDay: snapshot.pricePerDay,
+          rentEndsAt: snapshot.endsAt?.toISOString() ?? null,
+          secondsUntilEnd: Math.floor((endsAtMs - Date.now()) / MS_PER_SECOND),
+          lastActionAt: new Date().toISOString(),
+          note: 'Contract ended, waiting for SRSLY relist confirmation',
+        });
+        await this.saveState();
+      }
       if (!this.isSnapshotDue(snapshot)) continue;
       await this.maybeTriggerConfirmedAvailabilityRent(rule, snapshot);
     }
@@ -1483,6 +1497,7 @@ export class FleetRentalBot {
   }
 
   private isSnapshotDue(snapshot: RentalContractSnapshot): boolean {
+    if (snapshot.hasCurrentRentalState) return false;
     const endsAtMs = snapshot.endsAt?.getTime() ?? null;
     return endsAtMs == null || endsAtMs <= Date.now();
   }
@@ -1658,7 +1673,7 @@ export class FleetRentalBot {
         return;
       }
 
-    if (snapshot.endsAt) {
+    if (snapshot.endsAt && snapshot.endsAt.getTime() > Date.now()) {
       this.scheduleAggressivePhase(rule, snapshot.endsAt);
       this.scheduleAggressivePreparation(rule, snapshot.endsAt);
     }
@@ -1675,9 +1690,18 @@ export class FleetRentalBot {
         return;
       }
 
+      if (snapshot.hasCurrentRentalState) {
+        if (secondsUntilEnd != null && secondsUntilEnd <= 0) {
+          update({ status: 'pending', note: 'Contract ended, waiting for SRSLY relist confirmation' });
+          return;
+        }
+        update({ status: 'unavailable', note: snapshot.rentedByYou ? 'Fleet is currently rented by YOU' : 'Fleet is currently rented by someone' });
+        return;
+      }
+
       const due = !snapshot.endsAt || secondsUntilEnd == null || secondsUntilEnd <= 0;
       if (!due) {
-        update({ status: 'unavailable', note: snapshot.rentedByYou ? 'Fleet is currently rented by YOU' : 'Fleet is currently rented by someone' });
+        update({ status: 'waiting', note: 'Waiting for confirmed availability' });
         return;
       }
 
@@ -2195,6 +2219,25 @@ export class FleetRentalBot {
         tx: signature,
         message: `Confirmed availability outcome still unknown for ${rule.fleetName}`,
       });
+      try {
+        const snapshot = await this.fetchRentalContractSnapshot(rule.rentalContract);
+        const endsAtMs = snapshot.endsAt?.getTime() ?? null;
+        if (snapshot.hasCurrentRentalState && endsAtMs != null && endsAtMs <= Date.now()) {
+          this.runtimeByRule.set(key, {
+            ...(this.runtimeByRule.get(key) ?? this.createInitialRuntimeState()),
+            status: 'pending',
+            currentPricePerDay: snapshot.pricePerDay,
+            rentEndsAt: snapshot.endsAt?.toISOString() ?? null,
+            secondsUntilEnd: Math.floor((endsAtMs - Date.now()) / MS_PER_SECOND),
+            lastActionAt: new Date().toISOString(),
+            lastTx: signature,
+            note: 'Submitted transaction did not confirm; contract is still pending relist',
+          });
+          await this.saveState();
+        }
+      } catch (err) {
+        this.logger.warn(`Could not refresh pending state after unknown outcome for ${rule.fleetName}:`, err);
+      }
     } finally {
       this.confirmedAvailabilityInFlightByRule.delete(key);
     }
@@ -2405,6 +2448,7 @@ export class FleetRentalBot {
         );
 
         let endsAt: Date | null = null;
+        let hasCurrentRentalState = false;
         let rentedByYou = false;
         const currentRentalState = publicKeyFromUnknown((contract as Record<string, unknown>).currentRentalState);
         if (currentRentalState && !isDefaultPublicKey(currentRentalState)) {
@@ -2415,6 +2459,7 @@ export class FleetRentalBot {
             const borrower = publicKeyFromUnknown((rental as Record<string, unknown>).borrower);
             rentedByYou = Boolean(borrower && borrower.equals(this.wallet.publicKey));
             if (!cancelled) {
+              hasCurrentRentalState = true;
               endsAt = extractDate(rental, ['endTime', 'rentEndsAt', 'rentalEndsAt', 'endsAt', 'expirationTime', 'expiresAt']);
             }
           } catch (err) {
@@ -2423,7 +2468,15 @@ export class FleetRentalBot {
         }
 
         this.confirmedAvailabilityDecodeFailureCache.delete(rentalContract);
-        return { pricePerDay, endsAt, rentedByYou, toClose: Boolean((contract as Record<string, unknown>).toClose), rawAccountType: 'ContractState', raw: contract };
+        return {
+          pricePerDay,
+          endsAt,
+          hasCurrentRentalState,
+          rentedByYou,
+          toClose: Boolean((contract as Record<string, unknown>).toClose),
+          rawAccountType: 'ContractState',
+          raw: contract,
+        };
       } catch {
         // Fall through to generic account probing below.
       }
@@ -2443,7 +2496,15 @@ export class FleetRentalBot {
         );
         const endsAt = extractDate(raw, ['endTime', 'rentEndsAt', 'rentalEndsAt', 'endsAt', 'expirationTime', 'expiresAt', 'endTimestamp']);
         this.confirmedAvailabilityDecodeFailureCache.delete(rentalContract);
-        return { pricePerDay, endsAt, rentedByYou: false, toClose: Boolean((raw as Record<string, unknown>).toClose), rawAccountType: accountName, raw };
+        return {
+          pricePerDay,
+          endsAt,
+          hasCurrentRentalState: Boolean(endsAt),
+          rentedByYou: false,
+          toClose: Boolean((raw as Record<string, unknown>).toClose),
+          rawAccountType: accountName,
+          raw,
+        };
       } catch {
         // Try the next possible account type.
       }

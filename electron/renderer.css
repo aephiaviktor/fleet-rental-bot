@@ -431,7 +431,7 @@ label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.9rem; }
   border: 1px solid var(--border);
 }
 .badge.rented, .badge.waiting { color: var(--ok); border-color: rgba(52, 211, 153, 0.45); }
-.badge.unavailable, .badge.due, .badge.renting { color: var(--warn); border-color: rgba(251, 191, 36, 0.45); }
+.badge.unavailable, .badge.due, .badge.pending, .badge.renting { color: var(--warn); border-color: rgba(251, 191, 36, 0.45); }
 .badge.blocked, .badge.error { color: var(--danger); border-color: rgba(251, 113, 133, 0.45); }
 
 .modal-backdrop {
