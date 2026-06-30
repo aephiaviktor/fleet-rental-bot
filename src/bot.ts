@@ -65,6 +65,8 @@ export const AGGRESSIVE_BLOCKHASH_REFRESH_INTERVAL_MS = 300;
 export const AGGRESSIVE_BLOCKHASH_MAX_AGE_MS = 900;
 export const AGGRESSIVE_BLOCKHASH_PREWARM_MS = 2000;
 export const AGGRESSIVE_PREPARE_BEFORE_START_MS = 30000;
+export const AGGRESSIVE_SCHEDULER_TICK_MS = 250;
+export const AGGRESSIVE_TIMER_DRIFT_WARN_MS = 1000;
 export const AGGRESSIVE_STATUS_CHECK_INTERVAL_MS = 1200;
 export const AGGRESSIVE_PRIORITY_FEE_LADDER_STEPS = 4;
 export const CONFIRMED_AVAILABILITY_OUTCOME_CHECK_INTERVAL_MS = 1000;
@@ -73,7 +75,7 @@ export const CONFIRMED_AVAILABILITY_WATCHDOG_INTERVAL_MS = 30000;
 export const CONFIRMED_AVAILABILITY_WATCHDOG_NEAR_END_MS = 2 * 60 * 1000;
 export const CONFIRMED_AVAILABILITY_WATCHDOG_UNKNOWN_END_INTERVAL_MS = 5 * 60 * 1000;
 export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
-export const DAILY_RESTART_DEFER_WINDOW_MS = 5 * 60 * 1000;
+export const DAILY_RESTART_DEFER_WINDOW_MS = 15 * 60 * 1000;
 export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
@@ -1044,11 +1046,11 @@ export class FleetRentalBot {
   private atlasBalanceCache: number | null = null;
   private srslyProgram: Program | null = null;
   private readonly successfulRentKeys = new Set<string>();
-  private readonly aggressiveStartTimers = new Map<string, NodeJS.Timeout>();
   private readonly aggressiveIntervalTimers = new Map<string, NodeJS.Timeout>();
   private readonly aggressiveRuntimeByRule = new Map<string, AggressiveRuntimeState>();
-  private readonly aggressivePrepareTimers = new Map<string, NodeJS.Timeout>();
+  private readonly aggressiveStartInFlightByRule = new Set<string>();
   private readonly scheduledAggressiveWindows = new Map<string, ScheduledAggressiveWindow>();
+  private aggressiveSchedulerTimer: NodeJS.Timeout | null = null;
   private readonly preparedRentByRule = new Map<string, PreparedRentTransaction>();
   private readonly preparingRentByRule = new Map<string, Promise<PreparedRentTransaction>>();
   private readonly missedAggressiveWindowKeys = new Set<string>();
@@ -1139,17 +1141,18 @@ export class FleetRentalBot {
       clearTimeout(this.loopTimer);
       this.loopTimer = null;
     }
-    for (const timer of this.aggressiveStartTimers.values()) clearTimeout(timer);
     for (const timer of this.aggressiveIntervalTimers.values()) clearInterval(timer);
-    for (const timer of this.aggressivePrepareTimers.values()) clearTimeout(timer);
+    if (this.aggressiveSchedulerTimer) {
+      clearInterval(this.aggressiveSchedulerTimer);
+      this.aggressiveSchedulerTimer = null;
+    }
     const heldSharedExclusive = [...this.aggressiveRuntimeByRule.values()].some((runtime) => runtime.sharedExclusiveHeld);
     if (this.dailyRestartTimer) {
       clearTimeout(this.dailyRestartTimer);
       this.dailyRestartTimer = null;
     }
-    this.aggressiveStartTimers.clear();
     this.aggressiveIntervalTimers.clear();
-    this.aggressivePrepareTimers.clear();
+    this.aggressiveStartInFlightByRule.clear();
     this.aggressiveRuntimeByRule.clear();
     this.scheduledAggressiveWindows.clear();
     this.preparedRentByRule.clear();
@@ -1673,10 +1676,10 @@ export class FleetRentalBot {
         return;
       }
 
-    if (snapshot.endsAt && snapshot.endsAt.getTime() > Date.now()) {
-      this.scheduleAggressivePhase(rule, snapshot.endsAt);
-      this.scheduleAggressivePreparation(rule, snapshot.endsAt);
-    }
+      if (snapshot.endsAt && snapshot.endsAt.getTime() + this.config.aggressiveStopAfterEndSeconds * MS_PER_SECOND > Date.now()) {
+        this.scheduleAggressivePhase(rule, snapshot.endsAt);
+        this.scheduleAggressivePreparation(rule, snapshot.endsAt);
+      }
 
       const nowMs = Date.now();
       const aggressiveStopMs = snapshot.endsAt
@@ -1685,7 +1688,7 @@ export class FleetRentalBot {
       const inAggressiveWindow = aggressiveStopMs != null && nowMs <= aggressiveStopMs && secondsUntilEnd != null && secondsUntilEnd <= this.config.aggressiveStartBeforeEndSeconds;
 
       if (inAggressiveWindow && snapshot.endsAt) {
-        this.beginAggressiveSending(rule, snapshot.endsAt);
+        this.ensureAggressiveScheduler();
         update({ status: 'due', note: `Aggressive sending active (${secondsUntilEnd}s until end)` });
         return;
       }
@@ -1725,7 +1728,7 @@ export class FleetRentalBot {
   private scheduleAggressivePhase(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
     if (!rule.enabled) return;
     const key = getRuleKey(rule);
-    if (this.aggressiveStartTimers.has(key) || this.aggressiveIntervalTimers.has(key)) return;
+    if (this.scheduledAggressiveWindows.has(key) || this.aggressiveIntervalTimers.has(key)) return;
 
     const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
     const delayMs = Math.max(0, startAtMs - Date.now());
@@ -1739,11 +1742,7 @@ export class FleetRentalBot {
       startAtMs,
       stopAtMs,
     });
-    const timer = setTimeout(() => {
-      this.aggressiveStartTimers.delete(key);
-      this.beginAggressiveSending(rule, rentEndsAt);
-    }, delayMs);
-    this.aggressiveStartTimers.set(key, timer);
+    this.ensureAggressiveScheduler();
     const message = `Aggressive phase scheduled for ${rule.fleetName}: starts at ${new Date(startAtMs).toISOString()} (${Math.ceil(delayMs / MS_PER_SECOND)}s), ends at ${new Date(stopAtMs).toISOString()}`;
     this.logger.info(message);
     void this.appendLog({
@@ -1764,42 +1763,12 @@ export class FleetRentalBot {
   private scheduleAggressivePreparation(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
     if (!rule.enabled || this.config.dryRun) return;
     const key = getRuleKey(rule);
-    if (this.preparedRentByRule.has(key) || this.preparingRentByRule.has(key) || this.aggressivePrepareTimers.has(key)) return;
+    if (this.preparedRentByRule.has(key) || this.preparingRentByRule.has(key)) return;
 
     const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
     const prepareAtMs = startAtMs - AGGRESSIVE_PREPARE_BEFORE_START_MS;
     const delayMs = Math.max(0, prepareAtMs - Date.now());
     const scheduledMessage = `Aggressive preparation scheduled for ${rule.fleetName}: starts at ${new Date(prepareAtMs).toISOString()} (${Math.ceil(delayMs / MS_PER_SECOND)}s before timer)`;
-    const timer = setTimeout(() => {
-      this.aggressivePrepareTimers.delete(key);
-      const startedMessage = `Aggressive preparation started for ${rule.fleetName}`;
-      this.logger.info(startedMessage);
-      void this.appendLog({
-        event: 'AGGRESSIVE_PREPARE_START',
-        label: rule.fleetName,
-        fleetAccount: rule.fleetAccount,
-        rentalContract: rule.rentalContract,
-        prepareAt: new Date(prepareAtMs).toISOString(),
-        startAt: new Date(startAtMs).toISOString(),
-        rentEndsAt: rentEndsAt.toISOString(),
-        message: startedMessage,
-      });
-      void this.prepareRentForAggressive(rule).catch((err: unknown) => {
-        const message = `Could not prepare aggressive rent transaction for ${rule.fleetName}: ${formatError(err)}`;
-        this.logger.warn(message);
-        void this.appendLog({
-          event: 'AGGRESSIVE_PREPARE_FAILED',
-          label: rule.fleetName,
-          fleetAccount: rule.fleetAccount,
-          rentalContract: rule.rentalContract,
-          prepareAt: new Date(prepareAtMs).toISOString(),
-          startAt: new Date(startAtMs).toISOString(),
-          rentEndsAt: rentEndsAt.toISOString(),
-          message,
-        });
-      });
-    }, delayMs);
-    this.aggressivePrepareTimers.set(key, timer);
     this.logger.info(scheduledMessage);
     void this.appendLog({
       event: 'AGGRESSIVE_PREPARE_SCHEDULED',
@@ -1813,6 +1782,7 @@ export class FleetRentalBot {
       prepareBeforeStartMs: AGGRESSIVE_PREPARE_BEFORE_START_MS,
       message: scheduledMessage,
     });
+    this.ensureAggressiveScheduler();
 
     const blockhashPrewarmAtMs = startAtMs - AGGRESSIVE_BLOCKHASH_PREWARM_MS;
     const blockhashDelayMs = Math.max(0, blockhashPrewarmAtMs - Date.now());
@@ -1821,6 +1791,131 @@ export class FleetRentalBot {
         this.startBlockhashRefresh();
       }
     }, blockhashDelayMs);
+  }
+
+  private ensureAggressiveScheduler(): void {
+    if (this.aggressiveSchedulerTimer || !this.running) return;
+    this.aggressiveSchedulerTimer = setInterval(() => {
+      void this.runAggressiveSchedulerTick().catch((err: unknown) => {
+        this.logger.error('Aggressive scheduler tick failed:', err);
+        void this.appendLog({ event: 'AGGRESSIVE_SCHEDULER_ERROR', message: formatError(err) });
+      });
+    }, AGGRESSIVE_SCHEDULER_TICK_MS);
+  }
+
+  private stopAggressiveSchedulerIfIdle(): void {
+    if (!this.aggressiveSchedulerTimer) return;
+    if (this.scheduledAggressiveWindows.size > 0) return;
+    clearInterval(this.aggressiveSchedulerTimer);
+    this.aggressiveSchedulerTimer = null;
+  }
+
+  private async runAggressiveSchedulerTick(): Promise<void> {
+    if (!this.running) return;
+    const nowMs = Date.now();
+    const windows = [...this.scheduledAggressiveWindows.entries()].sort(([, a], [, b]) => a.startAtMs - b.startAtMs);
+
+    for (const [key, window] of windows) {
+      const rule = this.config.rentalRules.find((candidate) => getRuleKey(candidate) === key);
+      if (!rule || !rule.enabled || this.successfulRentKeys.has(key)) {
+        this.scheduledAggressiveWindows.delete(key);
+        continue;
+      }
+
+      if (
+        !this.config.dryRun &&
+        nowMs >= window.prepareAtMs &&
+        !this.preparedRentByRule.has(key) &&
+        !this.preparingRentByRule.has(key) &&
+        !this.aggressiveIntervalTimers.has(key)
+      ) {
+        this.startAggressivePreparationFromScheduler(rule, window, nowMs);
+      }
+
+      if (
+        nowMs >= window.startAtMs &&
+        !this.aggressiveRuntimeByRule.has(key) &&
+        !this.aggressiveIntervalTimers.has(key) &&
+        !this.aggressiveStartInFlightByRule.has(key)
+      ) {
+        await this.startAggressiveSendingFromScheduler(rule, window, nowMs);
+      }
+    }
+
+    this.stopAggressiveSchedulerIfIdle();
+  }
+
+  private startAggressivePreparationFromScheduler(rule: FleetRentalRuleConfig, window: ScheduledAggressiveWindow, nowMs: number): void {
+    const driftMs = nowMs - window.prepareAtMs;
+    const startedMessage = `Aggressive preparation started for ${rule.fleetName}`;
+    this.logger.info(startedMessage);
+    void this.appendLog({
+      event: 'AGGRESSIVE_PREPARE_START',
+      label: rule.fleetName,
+      fleetAccount: rule.fleetAccount,
+      rentalContract: rule.rentalContract,
+      prepareAt: new Date(window.prepareAtMs).toISOString(),
+      actualAt: new Date(nowMs).toISOString(),
+      driftMs,
+      startAt: new Date(window.startAtMs).toISOString(),
+      rentEndsAt: new Date(window.rentEndsAtMs).toISOString(),
+      message: startedMessage,
+    });
+    if (driftMs > AGGRESSIVE_TIMER_DRIFT_WARN_MS) {
+      void this.appendAggressiveTimerDrift(rule, 'prepare', window.prepareAtMs, nowMs);
+    }
+    void this.prepareRentForAggressive(rule).catch((err: unknown) => {
+      const message = `Could not prepare aggressive rent transaction for ${rule.fleetName}: ${formatError(err)}`;
+      this.logger.warn(message);
+      void this.appendLog({
+        event: 'AGGRESSIVE_PREPARE_FAILED',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        prepareAt: new Date(window.prepareAtMs).toISOString(),
+        actualAt: new Date(Date.now()).toISOString(),
+        startAt: new Date(window.startAtMs).toISOString(),
+        rentEndsAt: new Date(window.rentEndsAtMs).toISOString(),
+        message,
+      });
+    });
+  }
+
+  private async startAggressiveSendingFromScheduler(rule: FleetRentalRuleConfig, window: ScheduledAggressiveWindow, nowMs: number): Promise<void> {
+    const key = getRuleKey(rule);
+    const driftMs = nowMs - window.startAtMs;
+    if (driftMs > AGGRESSIVE_TIMER_DRIFT_WARN_MS) {
+      await this.appendAggressiveTimerDrift(rule, 'start', window.startAtMs, nowMs);
+    }
+    this.aggressiveStartInFlightByRule.add(key);
+    try {
+      await this.beginAggressiveSendingWithExclusive(rule, new Date(window.rentEndsAtMs));
+    } finally {
+      this.aggressiveStartInFlightByRule.delete(key);
+      this.stopAggressiveSchedulerIfIdle();
+    }
+  }
+
+  private async appendAggressiveTimerDrift(
+    rule: FleetRentalRuleConfig,
+    phase: 'prepare' | 'start',
+    scheduledAtMs: number,
+    actualAtMs: number,
+  ): Promise<void> {
+    const driftMs = actualAtMs - scheduledAtMs;
+    const message = `Aggressive ${phase} timer drift for ${rule.fleetName}: ${driftMs}ms late`;
+    this.logger.warn(message);
+    await this.appendLog({
+      event: 'AGGRESSIVE_TIMER_DRIFT',
+      label: rule.fleetName,
+      fleetAccount: rule.fleetAccount,
+      rentalContract: rule.rentalContract,
+      phase,
+      scheduledAt: new Date(scheduledAtMs).toISOString(),
+      actualAt: new Date(actualAtMs).toISOString(),
+      driftMs,
+      message,
+    });
   }
 
   private async prepareRentForAggressive(rule: FleetRentalRuleConfig): Promise<PreparedRentTransaction> {
@@ -1947,12 +2042,6 @@ export class FleetRentalBot {
     }
   }
 
-  private beginAggressiveSending(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
-    void this.beginAggressiveSendingWithExclusive(rule, rentEndsAt).catch((err: unknown) => {
-      this.logger.error(`Could not start aggressive sending for ${rule.fleetName}:`, err);
-    });
-  }
-
   private async beginAggressiveSendingWithExclusive(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
     const key = getRuleKey(rule);
     if (!this.running || !rule.enabled || this.aggressiveIntervalTimers.has(key)) return;
@@ -1984,12 +2073,14 @@ export class FleetRentalBot {
         });
       }
       this.scheduledAggressiveWindows.delete(key);
+      this.stopAggressiveSchedulerIfIdle();
       return;
     }
 
     const sharedExclusiveHeld = await this.acquireAggressiveExclusive(rule, stopAtMs);
     if (!sharedExclusiveHeld) {
       this.scheduledAggressiveWindows.delete(key);
+      this.stopAggressiveSchedulerIfIdle();
       return;
     }
 
@@ -2069,6 +2160,7 @@ export class FleetRentalBot {
     this.aggressiveRuntimeByRule.delete(key);
     this.scheduledAggressiveWindows.delete(key);
     this.preparedRentByRule.delete(key);
+    this.stopAggressiveSchedulerIfIdle();
     if (this.aggressiveIntervalTimers.size === 0) {
       this.stopBlockhashRefresh();
     }
