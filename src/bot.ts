@@ -80,7 +80,7 @@ export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.13';
+export const APP_VERSION = '0.2.16';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -232,6 +232,10 @@ export type ResolvedRentalRuleDetails = {
   durationMinDays: number | null;
   durationMaxDays: number | null;
   relistingStatus: 'relisting' | 'closing';
+  requiredCrew: number | null;
+  crewCount: number | null;
+  rentedCrew: number | null;
+  hasNoCrew: boolean;
   rentEndsAt: string | null;
 };
 
@@ -861,15 +865,17 @@ function deriveRentalContractForFleet(fleetAccount: PublicKey, srslyProgramId: P
   )[0];
 }
 
-async function fetchFleetName(connection: Connection, fleetAccount: PublicKey): Promise<string> {
-  const accountInfo = await connection.getAccountInfo(fleetAccount, 'confirmed');
-  if (!accountInfo) throw new Error(`Fleet account not found: ${fleetAccount.toBase58()}`);
-  const sage = createSageProgram(connection);
-  const decoded = SageFleet.decodeData({ accountId: fleetAccount, accountInfo } as any, sage);
-  if (decoded.type !== 'ok') {
-    throw decoded.error ?? new Error(`Could not decode fleet ${fleetAccount.toBase58()}`);
-  }
-  return byteArrayToString(decoded.data.data.fleetLabel) || fleetAccount.toBase58();
+function getFleetCrewInfo(fleet: any): { requiredCrew: number | null; crewCount: number | null; rentedCrew: number | null; hasNoCrew: boolean } {
+  const miscStats = fleet?.data?.stats?.miscStats ?? fleet?.stats?.miscStats ?? {};
+  const requiredCrew = numberFromUnknown((miscStats as Record<string, unknown>).requiredCrew);
+  const crewCount = numberFromUnknown((miscStats as Record<string, unknown>).crewCount);
+  const rentedCrew = numberFromUnknown((miscStats as Record<string, unknown>).rentedCrew);
+  return {
+    requiredCrew,
+    crewCount,
+    rentedCrew,
+    hasNoCrew: (requiredCrew ?? 0) > 0 && (crewCount ?? 0) <= 0 && (rentedCrew ?? 0) <= 0,
+  };
 }
 
 async function decodeSageFleet(connection: Connection, fleetAccount: PublicKey): Promise<any> {
@@ -977,7 +983,9 @@ export async function resolveRentalRuleDetails(input: {
     throw new Error(`Could not resolve fleet account from contract ${contract.toBase58()}`);
   }
 
-  const fleetName = await fetchFleetName(connection, fleet);
+  const decodedFleet = await decodeSageFleet(connection, fleet);
+  const fleetName = byteArrayToString(decodedFleet.data.fleetLabel) || fleet.toBase58();
+  const crewInfo = getFleetCrewInfo(decodedFleet);
   let rentEndsAt: string | null = null;
   const currentRentalState = publicKeyFromUnknown((contractState as Record<string, unknown>).currentRentalState);
   if (currentRentalState && !isDefaultPublicKey(currentRentalState)) {
@@ -999,6 +1007,10 @@ export async function resolveRentalRuleDetails(input: {
     durationMinDays: extractFirstNumber(contractState, ['durationMin']),
     durationMaxDays: extractFirstNumber(contractState, ['durationMax']),
     relistingStatus: Boolean((contractState as Record<string, unknown>).toClose) ? 'closing' : 'relisting',
+    requiredCrew: crewInfo.requiredCrew,
+    crewCount: crewInfo.crewCount,
+    rentedCrew: crewInfo.rentedCrew,
+    hasNoCrew: crewInfo.hasNoCrew,
     rentEndsAt,
   };
 }

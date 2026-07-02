@@ -280,7 +280,8 @@ async function resolveRuleRow(tr, options = {}) {
     fleetInput.readOnly = true;
     contractInput.readOnly = true;
     const relistingStatus = resolved.relistingStatus === 'closing' ? 'closing' : 'relisting';
-    hint.textContent = `Rate ${resolved.currentPricePerDay ?? '—'} ATLAS/day · ${relistingStatus}`;
+    const noCrewWarning = resolved.hasNoCrew ? ' <strong class="no-crew-warning">- no crew</strong>' : '';
+    hint.innerHTML = `Rate ${escapeHtml(resolved.currentPricePerDay ?? '—')} ATLAS/day · ${escapeHtml(relistingStatus)}${noCrewWarning}`;
   } catch (err) {
     scheduleRuleResolveRetry(tr, err.message || String(err));
   }
