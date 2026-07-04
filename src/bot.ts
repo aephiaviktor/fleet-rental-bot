@@ -80,7 +80,7 @@ export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.16';
+export const APP_VERSION = '0.2.17';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -874,7 +874,7 @@ function getFleetCrewInfo(fleet: any): { requiredCrew: number | null; crewCount:
     requiredCrew,
     crewCount,
     rentedCrew,
-    hasNoCrew: (requiredCrew ?? 0) > 0 && (crewCount ?? 0) <= 0 && (rentedCrew ?? 0) <= 0,
+    hasNoCrew: (rentedCrew ?? 0) <= 0,
   };
 }
 
