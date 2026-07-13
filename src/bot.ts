@@ -75,12 +75,10 @@ export const CONFIRMED_AVAILABILITY_WATCHDOG_INTERVAL_MS = 30000;
 export const CONFIRMED_AVAILABILITY_WATCHDOG_NEAR_END_MS = 2 * 60 * 1000;
 export const CONFIRMED_AVAILABILITY_WATCHDOG_UNKNOWN_END_INTERVAL_MS = 5 * 60 * 1000;
 export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
-export const DAILY_RESTART_DEFER_WINDOW_MS = 15 * 60 * 1000;
-export const DAILY_RESTART_CHECK_SETTLE_MS = 250;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.17';
+export const APP_VERSION = '0.2.19';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -168,7 +166,6 @@ export type FleetRentalBotConfig = {
     pricePerDay: number | null;
     rentEndsAt: string | null;
   }) => void | Promise<void>;
-  onRestartRequested?: (reason: string) => void | Promise<void>;
 };
 
 export type FleetRentalBotLogger = {
@@ -1074,8 +1071,6 @@ export class FleetRentalBot {
   private readonly confirmedAvailabilityDecodeFailureCache = new Map<string, { expiresAt: number; message: string }>();
   private confirmedAvailabilityWatchdogTimer: NodeJS.Timeout | null = null;
   private confirmedAvailabilityWatchdogInFlight = false;
-  private dailyRestartTimer: NodeJS.Timeout | null = null;
-  private dailyRestartPending = false;
   private blockhashCache: CachedBlockhash | null = null;
   private blockhashRefreshTimer: NodeJS.Timeout | null = null;
   private blockhashRefreshInFlight: Promise<CachedBlockhash> | null = null;
@@ -1128,7 +1123,6 @@ export class FleetRentalBot {
     this.startedAt = new Date().toISOString();
     this.running = true;
     await this.appendLog({ event: 'START' });
-    this.scheduleNextDailyRestartCheck();
     this.logger.info(`Hot wallet: ${this.wallet.publicKey.toBase58()}`);
     this.logger.info(`SRSLY program: ${this.srslyProgramId.toBase58()}`);
     this.logger.info(`Managing ${this.config.rentalRules.length} rental rule(s). Dry run: ${this.config.dryRun ? 'yes' : 'no'}.`);
@@ -1159,10 +1153,6 @@ export class FleetRentalBot {
       this.aggressiveSchedulerTimer = null;
     }
     const heldSharedExclusive = [...this.aggressiveRuntimeByRule.values()].some((runtime) => runtime.sharedExclusiveHeld);
-    if (this.dailyRestartTimer) {
-      clearTimeout(this.dailyRestartTimer);
-      this.dailyRestartTimer = null;
-    }
     this.aggressiveIntervalTimers.clear();
     this.aggressiveStartInFlightByRule.clear();
     this.aggressiveRuntimeByRule.clear();
@@ -1173,7 +1163,6 @@ export class FleetRentalBot {
     this.confirmedAvailabilityWatchdogLastPollAtMsByContract.clear();
     this.confirmedAvailabilityTriggeredEpochByRule.clear();
     this.confirmedAvailabilityInFlightByRule.clear();
-    this.dailyRestartPending = false;
     this.stopBlockhashRefresh();
     this.successfulRentKeys.clear();
     this.sharedAggressiveExclusiveHolders = 0;
@@ -1233,122 +1222,6 @@ export class FleetRentalBot {
         this.loopTimer = setTimeout(() => void this.loop(), GENERAL_CHECK_INTERVAL_SECONDS * MS_PER_SECOND);
       }
     }
-  }
-
-  private scheduleNextDailyRestartCheck() {
-    if (this.dailyRestartTimer) {
-      clearTimeout(this.dailyRestartTimer);
-      this.dailyRestartTimer = null;
-    }
-
-    const nowMs = Date.now();
-    const now = new Date(nowMs);
-    const nextMidnightUtcMs = Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() + 1,
-      0,
-      0,
-      0,
-      0,
-    );
-    const delayMs = Math.max(0, nextMidnightUtcMs - nowMs);
-    const message = `Daily restart check scheduled for ${new Date(nextMidnightUtcMs).toISOString()}`;
-    this.logger.info(message);
-    void this.appendLog({
-      event: 'RESTART_SCHEDULED',
-      scheduledFor: new Date(nextMidnightUtcMs).toISOString(),
-      delayMs,
-      message,
-    });
-    this.dailyRestartTimer = setTimeout(() => {
-      this.dailyRestartTimer = null;
-      void this.checkDailyRestart('daily_midnight_utc').catch((err: unknown) => {
-        this.logger.error('Daily restart check failed:', err);
-        void this.appendLog({ event: 'RESTART_CHECK_ERROR', message: formatError(err) });
-        if (this.running) this.scheduleNextDailyRestartCheck();
-      });
-    }, delayMs);
-  }
-
-  private scheduleDeferredRestartCheck(reason: string, runAtMs: number) {
-    if (!this.running || !this.dailyRestartPending) return;
-    if (this.dailyRestartTimer) {
-      clearTimeout(this.dailyRestartTimer);
-      this.dailyRestartTimer = null;
-    }
-    const delayMs = Math.max(DAILY_RESTART_CHECK_SETTLE_MS, runAtMs - Date.now());
-    this.dailyRestartTimer = setTimeout(() => {
-      this.dailyRestartTimer = null;
-      void this.checkDailyRestart(reason).catch((err: unknown) => {
-        this.logger.error('Deferred restart check failed:', err);
-        void this.appendLog({ event: 'RESTART_CHECK_ERROR', message: formatError(err) });
-        if (this.running) this.scheduleNextDailyRestartCheck();
-      });
-    }, delayMs);
-  }
-
-  private async checkDailyRestart(reason: string) {
-    if (!this.running) return;
-    this.dailyRestartPending = true;
-
-    const nowMs = Date.now();
-    const blockingWindow = this.findRestartBlockingWindow(nowMs);
-    if (blockingWindow) {
-      const recheckAtMs = blockingWindow.stopAtMs + DAILY_RESTART_CHECK_SETTLE_MS;
-      const message = `Daily restart deferred: ${blockingWindow.fleetName} has preparation/aggressive window activity until ${new Date(blockingWindow.stopAtMs).toISOString()}`;
-      this.logger.info(message);
-      await this.appendLog({
-        event: 'RESTART_DEFERRED',
-        reason,
-        label: blockingWindow.fleetName,
-        fleetAccount: blockingWindow.fleetAccount,
-        rentalContract: blockingWindow.rentalContract,
-        prepareAt: new Date(blockingWindow.prepareAtMs).toISOString(),
-        startAt: new Date(blockingWindow.startAtMs).toISOString(),
-        rentEndsAt: new Date(blockingWindow.rentEndsAtMs).toISOString(),
-        stopAt: new Date(blockingWindow.stopAtMs).toISOString(),
-        recheckAt: new Date(recheckAtMs).toISOString(),
-        message,
-      });
-      this.scheduleDeferredRestartCheck('deferred_window_complete', recheckAtMs);
-      return;
-    }
-
-    const message = 'Daily restart executing: no preparation/aggressive window is active or due within 5 minutes';
-    this.logger.info(message);
-    await this.appendLog({
-      event: 'RESTART_EXECUTED',
-      reason,
-      message,
-    });
-    this.dailyRestartPending = false;
-
-    if (this.config.onRestartRequested) {
-      await this.config.onRestartRequested('daily_midnight_utc');
-    } else {
-      this.scheduleNextDailyRestartCheck();
-    }
-  }
-
-  private findRestartBlockingWindow(nowMs: number): ScheduledAggressiveWindow | null {
-    if (this.aggressiveRuntimeByRule.size > 0 || this.preparingRentByRule.size > 0) {
-      const active = [...this.scheduledAggressiveWindows.values()]
-        .filter((window) => window.stopAtMs >= nowMs)
-        .sort((a, b) => a.stopAtMs - b.stopAtMs)[0];
-      if (active) return active;
-    }
-
-    const nearWindowCutoffMs = nowMs + DAILY_RESTART_DEFER_WINDOW_MS;
-    let nearest: ScheduledAggressiveWindow | null = null;
-    for (const window of this.scheduledAggressiveWindows.values()) {
-      if (window.stopAtMs < nowMs) continue;
-      const preparationNearOrActive = window.prepareAtMs <= nearWindowCutoffMs;
-      const aggressiveNearOrActive = window.startAtMs <= nearWindowCutoffMs;
-      if (!preparationNearOrActive && !aggressiveNearOrActive) continue;
-      if (!nearest || window.stopAtMs < nearest.stopAtMs) nearest = window;
-    }
-    return nearest;
   }
 
   private async startConfirmedAvailabilitySubscriptions(): Promise<void> {
