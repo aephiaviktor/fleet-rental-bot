@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
 const fsSync = require('fs');
@@ -104,6 +104,13 @@ app.commandLine.appendSwitch('disable-gpu');
 // Do not disable the software rasterizer in WSLg. Electron may need SwiftShader
 // when hardware/GPU processes are unavailable; disabling it causes startup
 // crashes such as "GPU process isn't usable. Goodbye."
+
+// Disable Chromium background throttling. Fleet Rental Bot is a 24/7
+// automation process and must remain responsive even when its window
+// is covered, minimized, or otherwise inactive on Windows.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 
 const {
   FleetRentalBot,
@@ -768,6 +775,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
   attachWindowCrashLogging(mainWindow);
@@ -800,6 +808,9 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    const powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+    console.log(`[FleetRentalBot] prevent-app-suspension blocker=${powerSaveBlockerId} active=${powerSaveBlocker.isStarted(powerSaveBlockerId)}`)
+
     installApplicationMenu();
     createWindow();
 
