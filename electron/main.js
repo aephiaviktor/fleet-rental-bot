@@ -87,6 +87,15 @@ function isDedicatedProfileInstall() {
   return appRootName === `fleet-rental-bot-${profileSlug}`;
 }
 
+function isSystemdManaged() {
+  if (process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID) return true;
+  try {
+    return fsSync.readFileSync('/proc/self/cgroup', 'utf8').includes('.service');
+  } catch {
+    return false;
+  }
+}
+
 const WINDOW_ICON = getWindowIconPath(_profileName);
 console.error('[FleetRentalBot] TITLE_SUFFIX =', JSON.stringify(TITLE_SUFFIX));
 
@@ -345,7 +354,11 @@ async function downloadUpdateAndRestart() {
   await runCommand('npm', ['install'], { cwd: getAppRoot() });
   await runCommand('npm', ['run', 'build'], { cwd: getAppRoot() });
 
-  app.relaunch();
+  // systemd's Restart=always starts the replacement. Calling app.relaunch()
+  // as well would create a second, unmanaged copy of the same profile.
+  if (!isSystemdManaged()) {
+    app.relaunch();
+  }
   app.exit(0);
   return { updated: true, currentVersion, latestVersion: latest.version };
 }
@@ -774,32 +787,45 @@ function createWindow() {
 
 installCrashEventLogging();
 
-app.whenReady().then(async () => {
-  installApplicationMenu();
-  createWindow();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
-  try {
-    await startBotFromSettings();
-  } catch (err) {
-    logger.error('Auto-start failed:', err);
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   });
-});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.whenReady().then(async () => {
+    installApplicationMenu();
+    createWindow();
 
-app.on('before-quit', async (event) => {
-  if (botRunning) {
-    event.preventDefault();
-    await stopBot();
-    app.quit();
-  }
-});
+    try {
+      await startBotFromSettings();
+    } catch (err) {
+      logger.error('Auto-start failed:', err);
+    }
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+
+  app.on('before-quit', async (event) => {
+    if (botRunning) {
+      event.preventDefault();
+      await stopBot();
+      app.quit();
+    }
+  });
+}
 
 function getDisplayAccounts(config) {
   let hotWalletAddress = '—';
