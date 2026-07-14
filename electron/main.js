@@ -56,6 +56,18 @@ if (_profileName) {
   if (typeof app.setDesktopName === 'function') {
     app.setDesktopName(`fleet-rental-bot-${_profileName}.desktop`);
   }
+  // On Windows, the taskbar / Start-menu icon is driven by the AppUserModelID,
+  // not the BrowserWindow icon option. Without a per-profile AUMID, Windows
+  // groups every Fleet Rental Bot instance under the generic Electron identity
+  // and the taskbar shows the default Electron icon regardless of what we pass
+  // to BrowserWindow. AUMID must be unique per profile so each instance gets
+  // its own taskbar entry and uses the per-profile .ico from assets/.
+  if (process.platform === 'win32') {
+    const appUserModelId = _profileName
+      ? `com.aephia.fleet-rental-bot-${_profileName}`
+      : 'com.aephia.fleet-rental-bot';
+    app.setAppUserModelId(appUserModelId);
+  }
 }
 
 // TITLE_SUFFIX must be set synchronously so it is available to createWindow().
