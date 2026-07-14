@@ -74,10 +74,15 @@ function getProfileKey(profileName) {
 
 function getWindowIconPath(profileName) {
   const profileKey = getProfileKey(profileName);
+  // On Windows the taskbar / window icon must be an .ico for proper
+  // display. A .png is accepted by Electron's BrowserWindow icon option
+  // but Windows falls back to the default app icon when it can't read a
+  // proper .ico resource from the path.
+  const ext = process.platform === 'win32' ? '.ico' : '.png';
   if (profileKey) {
-    return path.join(__dirname, '..', 'assets', `fleet-rental-bot-${profileKey}.png`);
+    return path.join(__dirname, '..', 'assets', `fleet-rental-bot-${profileKey}${ext}`);
   }
-  return path.join(__dirname, '..', 'assets', 'fleet-rental-bot-avatar.png');
+  return path.join(__dirname, '..', 'assets', `fleet-rental-bot-avatar${ext}`);
 }
 
 function isDedicatedProfileInstall() {
