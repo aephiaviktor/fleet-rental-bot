@@ -1,6 +1,6 @@
 {
   "name": "fleet-rental-bot",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "private": true,
   "main": "electron/main.js",
   "type": "commonjs",
