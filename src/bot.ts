@@ -78,7 +78,7 @@ export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.20';
+export const APP_VERSION = '0.2.26';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -1397,7 +1397,17 @@ export class FleetRentalBot {
 
     const previousRentEndMs = this.observedRentEndMsByRule.get(key) ?? 0;
     const triggeredEpochMs = this.confirmedAvailabilityTriggeredEpochByRule.get(key);
-    if (triggeredEpochMs === previousRentEndMs) return;
+    if (triggeredEpochMs === previousRentEndMs && previousRentEndMs > 0) {
+      await this.appendLog({
+        event: 'CONFIRMED_AVAILABLE_SKIP_REARM',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        previousRentEndsAt: new Date(previousRentEndMs).toISOString(),
+        message: `Confirmed availability suppressed for ${rule.fleetName}: already triggered for this rental-end epoch (cleared after failed or unknown outcomes)`,
+      });
+      return;
+    }
 
     if (snapshot.pricePerDay == null) {
       await this.appendLog({
@@ -1496,6 +1506,7 @@ export class FleetRentalBot {
       });
     } catch (err) {
       this.confirmedAvailabilityInFlightByRule.delete(key);
+      this.confirmedAvailabilityTriggeredEpochByRule.delete(key);
       this.runtimeByRule.set(key, {
         ...(this.runtimeByRule.get(key) ?? this.createInitialRuntimeState()),
         status: 'error',
@@ -2196,6 +2207,9 @@ export class FleetRentalBot {
         tx: signature,
         message: `Confirmed availability outcome still unknown for ${rule.fleetName}`,
       });
+      // Re-arm the trigger dedupe so the next real availability transition is not
+      // suppressed by the same (failed) rental-end epoch.
+      this.confirmedAvailabilityTriggeredEpochByRule.delete(key);
       try {
         const snapshot = await this.fetchRentalContractSnapshot(rule.rentalContract);
         const endsAtMs = snapshot.endsAt?.getTime() ?? null;
