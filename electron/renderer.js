@@ -65,6 +65,10 @@ const GENERAL_CHECK_INTERVAL_MS = 3600 * 1000;
 const RULE_RESOLVE_RETRY_MS = 5 * 60 * 1000;
 const ruleResolveRetryTimers = new WeakMap();
 let ruleResolveQueue = Promise.resolve();
+// Guard so a checkbox toggle and the Save button (or two rapid toggles)
+// can't stack concurrent saveSettings() runs. saveBtn.disabled only
+// covers the button; this flag covers the checkbox path too.
+let settingsSaveInFlight = false;
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -219,6 +223,14 @@ function createRuleRow(rule = {}) {
   fleetInput.addEventListener('blur', maybeResolve);
   contractInput.addEventListener('change', maybeResolve);
   contractInput.addEventListener('blur', maybeResolve);
+  // Auto-save on the Enabled checkbox so the in-memory bot picks up the
+  // change immediately (otherwise the running bot keeps the old enabled
+  // flag and the confirmed-availability watcher stays armed until the
+  // next manual Save). saveSettings() is re-entrancy-guarded.
+  const enabledInput = tr.querySelector('[data-field="enabled"]');
+  enabledInput.addEventListener('change', () => {
+    void saveSettings();
+  });
   rentalRulesBody.appendChild(tr);
   if (locked) {
     setTimeout(() => resolveRuleRow(tr, { force: true }), 0);
@@ -456,6 +468,8 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  if (settingsSaveInFlight) return;
+  settingsSaveInFlight = true;
   saveBtn.disabled = true;
   try {
     validateHeliusSenderSettings();
@@ -475,6 +489,7 @@ async function saveSettings() {
     appendLog({ timestamp: new Date().toISOString(), level: 'ERROR', message: err.message || String(err) });
   } finally {
     saveBtn.disabled = false;
+    settingsSaveInFlight = false;
   }
 }
 
