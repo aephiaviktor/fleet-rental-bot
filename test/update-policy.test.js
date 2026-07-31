@@ -40,11 +40,15 @@ test('current updater installs dependencies before building and exits after rela
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
   const installAt = main.indexOf("runCommand('npm', ['install']");
   const buildAt = main.indexOf("runCommand('npm', ['run', 'build']");
+  const validationAt = main.indexOf('validateReleaseTree(fs, extractedRoot');
+  const activationAt = main.indexOf('await fs.cp(extractedRoot, getAppRoot()');
   const relaunchAt = main.indexOf('app.relaunch()');
   const exitAt = main.indexOf('app.exit(0)');
 
   assert.ok(installAt >= 0);
   assert.ok(installAt < buildAt);
-  assert.ok(buildAt < relaunchAt);
+  assert.ok(buildAt < validationAt);
+  assert.ok(validationAt < activationAt);
+  assert.ok(activationAt < relaunchAt);
   assert.ok(relaunchAt < exitAt);
 });

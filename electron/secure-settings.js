@@ -73,6 +73,19 @@ async function writeJsonAtomic(fs, targetPath, value) {
   }
 }
 
+async function migrateSettingsFile(fs, targetPath, safeStorage) {
+  const raw = await fs.readFile(targetPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Settings file must contain a JSON object: ${targetPath}`);
+  }
+  const settings = decryptSensitiveSettings(parsed, safeStorage);
+  const encrypted = encryptSensitiveSettings(settings, safeStorage);
+  const migrated = JSON.stringify(encrypted) !== JSON.stringify(parsed);
+  if (migrated) await writeJsonAtomic(fs, targetPath, encrypted);
+  return { settings, migrated };
+}
+
 module.exports = {
   ENCRYPTED_PREFIX,
   REDACTED_VALUE,
@@ -81,6 +94,7 @@ module.exports = {
   encryptSensitiveSettings,
   isEncryptedValue,
   mergeSensitiveInput,
+  migrateSettingsFile,
   redactSensitiveSettings,
   writeJsonAtomic,
 };

@@ -1,6 +1,6 @@
 {
   "name": "fleet-rental-bot",
-  "version": "0.2.30",
+  "version": "0.2.31",
   "private": true,
   "main": "electron/main.js",
   "type": "commonjs",
@@ -8,6 +8,7 @@
     "build": "tsc",
     "test": "npm run build && node --test",
     "typecheck": "tsc --noEmit",
+    "validate:release": "npm run build && node electron/validate-release-cli.js",
     "start": "npm run build && electron .",
     "dev:cli": "ts-node src/index.ts",
     "start:electron": "npm run build && electron .",
@@ -23,7 +24,7 @@
     "bs58": "^6.0.0",
     "electron": "^42.1.0",
     "proper-lockfile": "^4.1.2",
-    "rpc_limiter": "git+https://github.com/aephiaviktor/rpc-limiter.git#main"
+    "rpc_limiter": "https://github.com/aephiaviktor/rpc-limiter/archive/b2db0cd36ff6f8b632dbb055d684dc6c34b735e9.tar.gz"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6",

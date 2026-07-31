@@ -11,6 +11,7 @@ const {
   decryptSensitiveSettings,
   encryptSensitiveSettings,
   mergeSensitiveInput,
+  migrateSettingsFile,
   redactSensitiveSettings,
   writeJsonAtomic,
 } = require('../electron/secure-settings');
@@ -73,6 +74,28 @@ test('atomic JSON writes replace the target without leaving temporary files', as
   await writeJsonAtomic(fs, target, { new: true });
 
   assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), { new: true });
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['settings.json']);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('sanitized profile migration encrypts plaintext in place and returns clear settings to main', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-rental-migration-'));
+  const target = path.join(dir, 'settings.json');
+  const clear = {
+    INSTANCE_NAME: 'MUD',
+    HOT_WALLET_SECRET: '***',
+    RPC_URL: 'https://main.example/?api-key=***',
+    RPC_URL_FALLBACK: 'https://fallback.example/?api-key=***',
+  };
+  await fs.writeFile(target, JSON.stringify(clear), 'utf8');
+
+  const migrated = await migrateSettingsFile(fs, target, fakeSafeStorage());
+  const stored = JSON.parse(await fs.readFile(target, 'utf8'));
+
+  assert.deepEqual(migrated.settings, clear);
+  assert.equal(migrated.migrated, true);
+  assert.match(stored.HOT_WALLET_SECRET, /^safeStorage:v1:/);
+  assert.doesNotMatch(JSON.stringify(stored), /wallet-secret|main-key|fallback-key/);
   assert.deepEqual((await fs.readdir(dir)).sort(), ['settings.json']);
   await fs.rm(dir, { recursive: true, force: true });
 });

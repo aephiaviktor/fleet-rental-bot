@@ -18,9 +18,9 @@ const {
 } = require('./update-policy');
 const {
   REDACTED_VALUE,
-  decryptSensitiveSettings,
   encryptSensitiveSettings,
   mergeSensitiveInput,
+  migrateSettingsFile,
   redactSensitiveSettings,
   writeJsonAtomic,
 } = require('./secure-settings');
@@ -35,6 +35,12 @@ const {
   applyProviderSettings,
   buildRpcLimiterV2Status,
 } = require('./rpc-limiter-v2-policy');
+const { validateReleaseTree } = require('./release-validation');
+const {
+  getProfileUserDataPath,
+  parseProfileName,
+  sanitizeProfileName,
+} = require('./profile-policy');
 
 // ---------------------------------------------------------------------------
 // Profile isolation — one codebase can run multiple local profiles.
@@ -46,38 +52,14 @@ const {
 //   2. Set app.setPath('userData') to ~/.config/fleet-rental-bot/profiles/<name>
 //   3. Set app.setName() so taskbar/dock entries are distinct per profile
 // ---------------------------------------------------------------------------
-function getProfileName() {
-  const args = process.argv.slice(1);
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === '--profile' || arg === '--instance') {
-      return String(args[i + 1] ?? '').trim();
-    }
-    if (arg.startsWith('--profile=')) {
-      return arg.slice('--profile='.length).trim();
-    }
-    if (arg.startsWith('--instance=')) {
-      return arg.slice('--instance='.length).trim();
-    }
-  }
-  return '';
-}
-
-function sanitizeProfileName(value) {
-  return String(value ?? '')
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
 const BASE_USER_DATA = path.join(process.env.HOME || process.env.USERPROFILE, '.config', 'fleet-rental-bot');
 const DEFAULT_SETTINGS_PATH = path.join(BASE_USER_DATA, 'settings.json');
-const _profileName = sanitizeProfileName(getProfileName());
+const _profileName = sanitizeProfileName(parseProfileName(process.argv));
 const _instanceName = _profileName;
 console.error('[FleetRentalBot] profile from argv =', JSON.stringify(_profileName));
 console.error('[FleetRentalBot] HOME =', JSON.stringify(process.env.HOME));
 if (_profileName) {
-  app.setPath('userData', path.join(BASE_USER_DATA, 'profiles', _profileName));
+  app.setPath('userData', getProfileUserDataPath(BASE_USER_DATA, _profileName));
   app.setName(`Fleet Rental Bot - ${_profileName}`);
   if (typeof app.setDesktopName === 'function') {
     app.setDesktopName(`fleet-rental-bot-${_profileName}.desktop`);
@@ -374,6 +356,10 @@ async function downloadUpdateAndRestart() {
   }
 
   const extractedRoot = path.join(tempDir, extracted.name);
+  await runCommand('npm', ['install'], { cwd: extractedRoot });
+  await runCommand('npm', ['run', 'build'], { cwd: extractedRoot });
+  await validateReleaseTree(fs, extractedRoot, { platform: process.platform });
+
   await fs.cp(extractedRoot, getAppRoot(), {
     recursive: true,
     force: true,
@@ -598,26 +584,13 @@ async function sendSettingsToRpcLimiter(config) {
 async function loadLocalSettings() {
   const candidatePaths = [getSettingsPath(), DEFAULT_SETTINGS_PATH];
   for (const settingsPath of candidatePaths) {
-    let raw;
     try {
-      raw = await fs.readFile(settingsPath, 'utf8');
+      return (await migrateSettingsFile(fs, settingsPath, safeStorage)).settings;
     } catch (error) {
       if (error?.code === 'ENOENT') continue;
+      if (error instanceof SyntaxError || /must contain a JSON object/.test(String(error?.message || ''))) continue;
       throw error;
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-    const clearSettings = decryptSensitiveSettings(parsed, safeStorage);
-    const encryptedSettings = encryptSensitiveSettings(clearSettings, safeStorage);
-    if (JSON.stringify(encryptedSettings) !== JSON.stringify(parsed)) {
-      await writeJsonAtomic(fs, settingsPath, encryptedSettings);
-    }
-    return clearSettings;
   }
   return {};
 }
