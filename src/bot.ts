@@ -280,6 +280,15 @@ type RpcMethodCounterSnapshot = {
   total: Record<string, RpcMethodCounter>;
 };
 
+type RpcWaitLimiter = {
+  wait: (label: string, bucketName?: 'rpc:shared' | 'tx:shared', method?: string) => Promise<void>;
+};
+
+export type RpcConnectionTestSeams = {
+  createConnection?: (url: string, config: { commitment: 'confirmed'; disableRetryOnRateLimit: boolean }) => Connection;
+  limiter?: RpcWaitLimiter;
+};
+
 type PreparedRentTransaction = {
   instructions: TransactionInstruction[];
   preparedAtMs: number;
@@ -525,7 +534,7 @@ class SharedRpcRequestLimiter {
 async function callRpcWithSharedLimiter<T>(
   label: string,
   invoke: () => Promise<T>,
-  limiter: SharedRpcRequestLimiter,
+  limiter: RpcWaitLimiter,
   bucketName: 'rpc:shared' | 'tx:shared' = 'rpc:shared',
   method: string = label,
 ): Promise<T> {
@@ -533,17 +542,19 @@ async function callRpcWithSharedLimiter<T>(
   return invoke();
 }
 
-function createFailoverConnection(
+export function createFailoverConnection(
   primaryUrl: string,
   fallbackUrl: string | undefined,
   logger: FleetRentalBotLogger,
   useSharedLimiter: () => boolean,
   metricsProfile: string,
   recordRpcMethodCounters?: (snapshot: RpcMethodCounterSnapshot) => void,
+  seams: RpcConnectionTestSeams = {},
 ): Connection {
   const connectionConfig = { commitment: 'confirmed' as const, disableRetryOnRateLimit: true };
-  const primary = new Connection(primaryUrl, connectionConfig);
-  const limiter = new SharedRpcRequestLimiter(logger, useSharedLimiter, 'Fleet Rental Bot', metricsProfile);
+  const createConnection = seams.createConnection ?? ((url, config) => new Connection(url, config));
+  const primary = createConnection(primaryUrl, connectionConfig);
+  const limiter = seams.limiter ?? new SharedRpcRequestLimiter(logger, useSharedLimiter, 'Fleet Rental Bot', metricsProfile);
   const rpcMethodCounters = new Map<string, RpcMethodCounter>();
   const rpcIntervalMethodCounters = new Map<string, RpcMethodCounter>();
   const rpcCounterStartedAtMs = Date.now();
@@ -642,7 +653,7 @@ function createFailoverConnection(
     }) as Connection;
   }
 
-  const fallback = new Connection(fallbackUrl, connectionConfig);
+  const fallback = createConnection(fallbackUrl, connectionConfig);
   return new Proxy(primary, {
     get(target, prop, receiver) {
       const primaryValue = Reflect.get(target, prop, receiver);
