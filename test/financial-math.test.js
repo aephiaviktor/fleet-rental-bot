@@ -4,6 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  AGGRESSIVE_PREPARE_BEFORE_START_MS,
+  calculateAggressiveWindow,
   calculateFallbackRentEndsAt,
   calculateRentalPaymentBaseUnits,
   normalizePricePerDay,
@@ -27,4 +29,17 @@ test('fallback rental end time advances by exact 24-hour rental days', () => {
   const now = Date.parse('2026-07-31T12:00:00.000Z');
   assert.equal(calculateFallbackRentEndsAt(now, 1), '2026-08-01T12:00:00.000Z');
   assert.equal(calculateFallbackRentEndsAt(now, 24), '2026-08-24T12:00:00.000Z');
+});
+
+test('aggressive timing derives preparation, start, and stop boundaries from rental end', () => {
+  const rentEndsAtMs = Date.parse('2026-07-31T12:00:00.000Z');
+  const window = calculateAggressiveWindow(rentEndsAtMs, 1, 1.5);
+
+  assert.deepEqual(window, {
+    prepareAtMs: rentEndsAtMs - 1_000 - AGGRESSIVE_PREPARE_BEFORE_START_MS,
+    startAtMs: rentEndsAtMs - 1_000,
+    stopAtMs: rentEndsAtMs + 1_500,
+  });
+  assert.ok(window.prepareAtMs < window.startAtMs);
+  assert.ok(window.startAtMs < window.stopAtMs);
 });

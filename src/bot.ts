@@ -804,6 +804,19 @@ export function calculateFallbackRentEndsAt(nowMs: number, durationDays: number)
   return new Date(nowMs + durationDays * 24 * 60 * 60 * 1000).toISOString();
 }
 
+export function calculateAggressiveWindow(
+  rentEndsAtMs: number,
+  startBeforeEndSeconds: number,
+  stopAfterEndSeconds: number,
+): { prepareAtMs: number; startAtMs: number; stopAtMs: number } {
+  const startAtMs = rentEndsAtMs - startBeforeEndSeconds * MS_PER_SECOND;
+  return {
+    prepareAtMs: startAtMs - AGGRESSIVE_PREPARE_BEFORE_START_MS,
+    startAtMs,
+    stopAtMs: rentEndsAtMs + stopAfterEndSeconds * MS_PER_SECOND,
+  };
+}
+
 function publicKeyFromUnknown(value: unknown): PublicKey | null {
   if (value instanceof PublicKey) return value;
   if (typeof value === 'string') {
@@ -1646,15 +1659,18 @@ export class FleetRentalBot {
     const key = getRuleKey(rule);
     if (this.scheduledAggressiveWindows.has(key) || this.aggressiveIntervalTimers.has(key)) return;
 
-    const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
+    const { prepareAtMs, startAtMs, stopAtMs } = calculateAggressiveWindow(
+      rentEndsAt.getTime(),
+      this.config.aggressiveStartBeforeEndSeconds,
+      this.config.aggressiveStopAfterEndSeconds,
+    );
     const delayMs = Math.max(0, startAtMs - Date.now());
-    const stopAtMs = rentEndsAt.getTime() + this.config.aggressiveStopAfterEndSeconds * MS_PER_SECOND;
     this.scheduledAggressiveWindows.set(key, {
       fleetName: rule.fleetName,
       fleetAccount: rule.fleetAccount,
       rentalContract: rule.rentalContract,
       rentEndsAtMs: rentEndsAt.getTime(),
-      prepareAtMs: startAtMs - AGGRESSIVE_PREPARE_BEFORE_START_MS,
+      prepareAtMs,
       startAtMs,
       stopAtMs,
     });
@@ -1681,8 +1697,11 @@ export class FleetRentalBot {
     const key = getRuleKey(rule);
     if (this.preparedRentByRule.has(key) || this.preparingRentByRule.has(key)) return;
 
-    const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
-    const prepareAtMs = startAtMs - AGGRESSIVE_PREPARE_BEFORE_START_MS;
+    const { prepareAtMs, startAtMs } = calculateAggressiveWindow(
+      rentEndsAt.getTime(),
+      this.config.aggressiveStartBeforeEndSeconds,
+      this.config.aggressiveStopAfterEndSeconds,
+    );
     const delayMs = Math.max(0, prepareAtMs - Date.now());
     const scheduledMessage = `Aggressive preparation scheduled for ${rule.fleetName}: starts at ${new Date(prepareAtMs).toISOString()} (${Math.ceil(delayMs / MS_PER_SECOND)}s before timer)`;
     this.logger.info(scheduledMessage);
@@ -1962,8 +1981,11 @@ export class FleetRentalBot {
     const key = getRuleKey(rule);
     if (!this.running || !rule.enabled || this.aggressiveIntervalTimers.has(key)) return;
 
-    const startAtMs = rentEndsAt.getTime() - this.config.aggressiveStartBeforeEndSeconds * MS_PER_SECOND;
-    const stopAtMs = rentEndsAt.getTime() + this.config.aggressiveStopAfterEndSeconds * MS_PER_SECOND;
+    const { startAtMs, stopAtMs } = calculateAggressiveWindow(
+      rentEndsAt.getTime(),
+      this.config.aggressiveStartBeforeEndSeconds,
+      this.config.aggressiveStopAfterEndSeconds,
+    );
     const nowMs = Date.now();
     if (nowMs < startAtMs) {
       this.scheduleAggressivePhase(rule, rentEndsAt);
