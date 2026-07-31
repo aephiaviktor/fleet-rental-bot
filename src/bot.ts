@@ -789,10 +789,18 @@ function extractFirstNumber(source: unknown, names: string[]): number | null {
   return null;
 }
 
-function normalizePricePerDay(raw: number | null): number | null {
+export function normalizePricePerDay(raw: number | null): number | null {
   if (raw == null) return null;
   if (raw > 1_000_000) return raw / 10 ** LAMPORTS_PER_ATLAS_DECIMALS;
   return raw;
+}
+
+export function calculateRentalPaymentBaseUnits(ratePerDay: number, durationDays: number): number {
+  return Math.floor(ratePerDay * durationDays * 10 ** LAMPORTS_PER_ATLAS_DECIMALS);
+}
+
+export function calculateFallbackRentEndsAt(nowMs: number, durationDays: number): string {
+  return new Date(nowMs + durationDays * 24 * 60 * 60 * 1000).toISOString();
 }
 
 function publicKeyFromUnknown(value: unknown): PublicKey | null {
@@ -2257,7 +2265,7 @@ export class FleetRentalBot {
     } catch (err) {
       this.logger.warn(`Could not refresh rental end after success for ${rule.fleetName}:`, err);
     }
-    const rentEndsAt = refreshedSnapshot?.endsAt?.toISOString() ?? new Date(Date.now() + rule.durationDays * 24 * 60 * 60 * 1000).toISOString();
+    const rentEndsAt = refreshedSnapshot?.endsAt?.toISOString() ?? calculateFallbackRentEndsAt(Date.now(), rule.durationDays);
     const secondsUntilEnd = Math.max(0, Math.floor((Date.parse(rentEndsAt) - Date.now()) / MS_PER_SECOND));
     const currentPricePerDay = pricePerDay ?? refreshedSnapshot?.pricePerDay ?? null;
     const message = `Rent successful for ${rule.fleetName}`;
@@ -2390,7 +2398,7 @@ export class FleetRentalBot {
     const rentalAuthority = deriveRentalAuthority(srslyProgramId);
     const rentalThread = deriveRentalThread(rentalAuthority, rentalState);
 
-    const amount = new BN(Math.floor(rate * rule.durationDays * 10 ** LAMPORTS_PER_ATLAS_DECIMALS));
+    const amount = new BN(calculateRentalPaymentBaseUnits(rate, rule.durationDays));
     const duration = new BN(rule.durationDays);
 
     const accounts = {
