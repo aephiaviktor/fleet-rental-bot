@@ -1,11 +1,13 @@
 {
   "name": "fleet-rental-bot",
-  "version": "0.2.32",
+  "version": "0.2.33",
   "private": true,
   "main": "electron/main.js",
   "type": "commonjs",
   "scripts": {
     "build": "tsc",
+    "ensure-electron-runtime": "node node_modules/electron/install.js",
+    "postinstall": "npm run ensure-electron-runtime",
     "test": "npm run build && node --test",
     "typecheck": "tsc --noEmit",
     "validate:release": "npm run build && node electron/validate-release-cli.js",

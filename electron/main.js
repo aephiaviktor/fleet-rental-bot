@@ -3,7 +3,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const fs = require('fs/promises');
 const fsSync = require('fs');
-const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { Connection, PublicKey } = require('@solana/web3.js');
 const lockfile = require('proper-lockfile');
@@ -11,10 +11,11 @@ const packageJson = require('../package.json');
 const { resolvePaths } = require('rpc_limiter');
 const { readState: readRpcLimiterState, writeStateSync: writeRpcLimiterStateSync, bumpRevision: bumpRpcLimiterRevision } = require('rpc_limiter/dist/state');
 const {
+  buildWindowsTransactionalUpdateScript,
+  buildWindowsUpdaterLauncher,
   compareVersions,
   isDedicatedProfileInstall: matchesDedicatedProfileInstall,
   normalizeVersion,
-  shouldCopyUpdatePath,
 } = require('./update-policy');
 const {
   REDACTED_VALUE,
@@ -109,15 +110,6 @@ function isDedicatedProfileInstall() {
   return matchesDedicatedProfileInstall(path.basename(getAppRoot()), _profileName);
 }
 
-function isSystemdManaged() {
-  if (process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID) return true;
-  try {
-    return fsSync.readFileSync('/proc/self/cgroup', 'utf8').includes('.service');
-  } catch {
-    return false;
-  }
-}
-
 const WINDOW_ICON = getWindowIconPath(_profileName);
 console.error('[FleetRentalBot] TITLE_SUFFIX =', JSON.stringify(TITLE_SUFFIX));
 
@@ -146,6 +138,12 @@ const {
 let mainWindow = null;
 let bot = null;
 let botRunning = false;
+
+function emitUpdateProgress(phase, message) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-progress', { phase, message });
+  }
+}
 
 const AEPHIA_TOKEN_VALIDATE_URL = 'https://api.aephia.com/token/validate';
 const GITHUB_REPO = 'aephiaviktor/fleet-rental-bot';
@@ -326,6 +324,74 @@ async function downloadFile(url, targetPath) {
   await fs.writeFile(targetPath, buffer);
 }
 
+async function sha256File(filePath) {
+  const contents = await fs.readFile(filePath);
+  return crypto.createHash('sha256').update(contents).digest('hex');
+}
+
+async function launchWindowsTransactionalUpdater({ appRoot, stagedRoot, tempDir }) {
+  const scriptPath = path.join(tempDir, 'finish-update.ps1');
+  const launcherPath = path.join(tempDir, 'finish-update.vbs');
+  const readyFile = path.join(tempDir, 'helper-ready');
+  const startupReadyFile = path.join(tempDir, 'app-started');
+  const script = buildWindowsTransactionalUpdateScript({
+    appRoot,
+    stagedRoot,
+    parentPid: process.pid,
+    taskName: `Fleet Rental Bot ${_profileName}`,
+    readyFile,
+    startupReadyFile,
+  });
+  await fs.writeFile(scriptPath, script, 'utf8');
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const powershellPath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await fs.writeFile(launcherPath, buildWindowsUpdaterLauncher({ powershellPath, scriptPath }), 'utf8');
+  const wscriptPath = path.join(systemRoot, 'System32', 'wscript.exe');
+  const child = spawn(wscriptPath, [launcherPath], {
+    cwd: tempDir,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(readyFile);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error('Windows update helper did not confirm startup; the current version is still running.');
+}
+
+async function confirmTransactionalUpdateStartup() {
+  const appRoot = getAppRoot();
+  const readinessPath = path.join(appRoot, '.update-readiness.json');
+  try {
+    const readiness = JSON.parse(await fs.readFile(readinessPath, 'utf8'));
+    const readyFile = path.resolve(String(readiness?.readyFile || ''));
+    const readyDir = path.dirname(readyFile);
+    const expectedParent = path.dirname(appRoot);
+    if (!path.isAbsolute(readyFile)
+      || path.dirname(readyDir) !== expectedParent
+      || !path.basename(readyDir).startsWith('.fleet-rental-bot-update-')) {
+      throw new Error('Update readiness marker path is invalid.');
+    }
+    await fs.writeFile(readyFile, JSON.stringify({
+      version: packageJson.version || 'unknown',
+      profile: _profileName,
+      pid: process.pid,
+      readyAt: new Date().toISOString(),
+    }), 'utf8');
+    await fs.rm(readinessPath, { force: true });
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.error('[FleetRentalBot] Failed to confirm update startup:', error);
+  }
+}
+
 async function downloadUpdateAndRestart() {
   if (!isDedicatedProfileInstall()) {
     throw new Error(
@@ -339,14 +405,20 @@ async function downloadUpdateAndRestart() {
   if (compareVersions(latest.version, currentVersion) <= 0) {
     return { updated: false, currentVersion, latestVersion: latest.version };
   }
-
-  if (botRunning) {
-    await stopBot();
+  if (process.platform !== 'win32') {
+    throw new Error('Transactional in-app updates are supported only on Windows.');
+  }
+  if (!_profileName) {
+    throw new Error('Transactional updates require a named Fleet Rental Bot profile.');
   }
 
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-rental-bot-update-'));
+  const appRoot = getAppRoot();
+  const tempDir = await fs.mkdtemp(path.join(path.dirname(appRoot), '.fleet-rental-bot-update-'));
   const archivePath = path.join(tempDir, `${latest.branch || 'main'}.tar.gz`);
+  emitUpdateProgress('downloading', `Downloading Fleet Rental Bot v${latest.version}...`);
   await downloadFile(latest.tarballUrl, archivePath);
+  const archiveSha256 = await sha256File(archivePath);
+  emitUpdateProgress('extracting', 'Extracting and validating the downloaded release...');
   await runCommand('tar', ['-xzf', archivePath, '-C', tempDir], { cwd: tempDir });
 
   const entries = await fs.readdir(tempDir, { withFileTypes: true });
@@ -355,30 +427,34 @@ async function downloadUpdateAndRestart() {
     throw new Error('Downloaded update archive did not contain the expected project folder.');
   }
 
-  const extractedRoot = path.join(tempDir, extracted.name);
-  await runCommand('npm', ['install'], { cwd: extractedRoot });
-  await runCommand('npm', ['run', 'build'], { cwd: extractedRoot });
-  await validateReleaseTree(fs, extractedRoot, { platform: process.platform });
-
-  await fs.cp(extractedRoot, getAppRoot(), {
-    recursive: true,
-    force: true,
-    filter: (source) => {
-      const rel = path.relative(extractedRoot, source);
-      return shouldCopyUpdatePath(rel);
-    },
-  });
-
-  await runCommand('npm', ['install'], { cwd: getAppRoot() });
-  await runCommand('npm', ['run', 'build'], { cwd: getAppRoot() });
-
-  // systemd's Restart=always starts the replacement. Calling app.relaunch()
-  // as well would create a second, unmanaged copy of the same profile.
-  if (!isSystemdManaged()) {
-    app.relaunch();
+  const stagedRoot = path.join(tempDir, extracted.name);
+  const stagedPackage = JSON.parse(await fs.readFile(path.join(stagedRoot, 'package.json'), 'utf8'));
+  if (normalizeVersion(stagedPackage.version) !== normalizeVersion(latest.version)) {
+    throw new Error(`Staged release version ${stagedPackage.version || 'unknown'} does not match ${latest.version}.`);
   }
-  app.exit(0);
-  return { updated: true, currentVersion, latestVersion: latest.version };
+
+  emitUpdateProgress('dependencies', 'Installing update dependencies — this can take several minutes...');
+  await runCommand('npm', ['install', '--include=dev', '--no-audit', '--no-fund'], { cwd: stagedRoot });
+  emitUpdateProgress('runtime', 'Validating the Electron runtime...');
+  await runCommand('npm', ['run', 'ensure-electron-runtime'], { cwd: stagedRoot });
+  emitUpdateProgress('building', 'Building and validating the updated application...');
+  await runCommand('npm', ['run', 'build'], { cwd: stagedRoot });
+  await validateReleaseTree(fs, stagedRoot, { platform: process.platform });
+  await fs.writeFile(path.join(stagedRoot, '.update-release.json'), JSON.stringify({
+    version: latest.version,
+    branch: latest.branch,
+    archiveSha256,
+    stagedAt: new Date().toISOString(),
+  }, null, 2));
+  await fs.writeFile(path.join(stagedRoot, '.update-readiness.json'), JSON.stringify({
+    readyFile: path.join(tempDir, 'app-started'),
+  }, null, 2));
+
+  if (botRunning) await stopBot();
+  emitUpdateProgress('restarting', 'Update staged successfully. Restarting Fleet Rental Bot...');
+  await launchWindowsTransactionalUpdater({ appRoot, stagedRoot, tempDir });
+  setTimeout(() => app.exit(0), 750);
+  return { updated: true, currentVersion, latestVersion: latest.version, staged: true };
 }
 
 function installApplicationMenu() {
@@ -764,6 +840,7 @@ function createWindow() {
   });
   mainWindow.webContents.once('did-finish-load', () => {
     mainWindow.setTitle(WINDOW_TITLE);
+    void confirmTransactionalUpdateStartup();
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer.html'));

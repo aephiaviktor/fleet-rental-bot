@@ -31,6 +31,11 @@ contextBridge.exposeInMainWorld('botApi', {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   downloadUpdateAndRestart: () => ipcRenderer.invoke('updates:download-and-restart'),
+  onUpdateProgress: (handler) => {
+    const wrapped = (_event, payload) => handler(payload);
+    ipcRenderer.on('update-progress', wrapped);
+    return () => ipcRenderer.removeListener('update-progress', wrapped);
+  },
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (payload) => ipcRenderer.invoke('settings:save', payload),
   sendSettingsToRpcLimiter: (payload) => ipcRenderer.invoke('rpc-limiter:send-settings', payload),

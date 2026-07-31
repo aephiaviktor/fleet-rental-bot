@@ -768,6 +768,10 @@ updateConfirmBtn.addEventListener('click', async () => {
   }
 });
 
+const removeUpdateProgressListener = window.botApi.onUpdateProgress((progress) => {
+  if (progress?.message) updateMessageEl.textContent = progress.message;
+});
+
 setupTabs();
 refreshAppVersion()
   .then(loadSettings)
@@ -781,6 +785,7 @@ rentalRulesHealthTimer = setInterval(() => {
   });
 }, GENERAL_CHECK_INTERVAL_MS);
 window.addEventListener('beforeunload', () => {
+  removeUpdateProgressListener?.();
   if (statusTimer) clearInterval(statusTimer);
   if (rentalRulesHealthTimer) clearInterval(rentalRulesHealthTimer);
 });
