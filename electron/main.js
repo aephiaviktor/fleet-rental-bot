@@ -9,6 +9,12 @@ const lockfile = require('proper-lockfile');
 const packageJson = require('../package.json');
 const { resolvePaths } = require('rpc_limiter');
 const { readState: readRpcLimiterState, writeStateSync: writeRpcLimiterStateSync, bumpRevision: bumpRpcLimiterRevision } = require('rpc_limiter/dist/state');
+const {
+  compareVersions,
+  isDedicatedProfileInstall: matchesDedicatedProfileInstall,
+  normalizeVersion,
+  shouldCopyUpdatePath,
+} = require('./update-policy');
 
 // ---------------------------------------------------------------------------
 // Profile isolation — one codebase can run multiple local profiles.
@@ -98,10 +104,7 @@ function getWindowIconPath(profileName) {
 }
 
 function isDedicatedProfileInstall() {
-  if (!_profileName) return true;
-  const appRootName = path.basename(getAppRoot()).toLowerCase();
-  const profileSlug = _profileName.toLowerCase();
-  return appRootName === `fleet-rental-bot-${profileSlug}`;
+  return matchesDedicatedProfileInstall(path.basename(getAppRoot()), _profileName);
 }
 
 function isSystemdManaged() {
@@ -244,21 +247,6 @@ async function readPackageVersion() {
   return JSON.parse(raw).version;
 }
 
-function normalizeVersion(value) {
-  return String(value || '').trim().replace(/^v/i, '');
-}
-
-function compareVersions(a, b) {
-  const left = normalizeVersion(a).split('.').map((part) => Number.parseInt(part, 10) || 0);
-  const right = normalizeVersion(b).split('.').map((part) => Number.parseInt(part, 10) || 0);
-  const length = Math.max(left.length, right.length);
-  for (let i = 0; i < length; i += 1) {
-    if ((left[i] || 0) > (right[i] || 0)) return 1;
-    if ((left[i] || 0) < (right[i] || 0)) return -1;
-  }
-  return 0;
-}
-
 async function fetchGithubJson(url) {
   const response = await fetch(url, {
     headers: {
@@ -371,7 +359,7 @@ async function downloadUpdateAndRestart() {
     force: true,
     filter: (source) => {
       const rel = path.relative(extractedRoot, source);
-      return !rel.startsWith('.git') && !rel.startsWith('node_modules') && !rel.startsWith('analysis') && !rel.endsWith('-analysis');
+      return shouldCopyUpdatePath(rel);
     },
   });
 
