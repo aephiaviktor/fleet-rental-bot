@@ -8,6 +8,7 @@ const path = require('node:path');
 
 const {
   REDACTED_VALUE,
+  SENSITIVE_PLACEHOLDER,
   decryptSensitiveSettings,
   encryptSensitiveSettings,
   mergeSensitiveInput,
@@ -50,11 +51,12 @@ test('renderer settings are redacted and placeholder saves preserve existing sec
   const current = { HOT_WALLET_SECRET: 'wallet-secret', AEPHIA_API_KEY: 'api-secret', OWNER_WALLET: 'owner' };
   const redacted = redactSensitiveSettings(current);
 
-  assert.equal(redacted.HOT_WALLET_SECRET, REDACTED_VALUE);
-  assert.equal(redacted.AEPHIA_API_KEY, REDACTED_VALUE);
+  assert.equal(redacted.HOT_WALLET_SECRET, SENSITIVE_PLACEHOLDER);
+  assert.equal(redacted.AEPHIA_API_KEY, SENSITIVE_PLACEHOLDER);
+  assert.notEqual(redacted.HOT_WALLET_SECRET, REDACTED_VALUE);
   assert.equal(redacted.OWNER_WALLET, 'owner');
   assert.deepEqual(
-    mergeSensitiveInput(current, { HOT_WALLET_SECRET: REDACTED_VALUE, AEPHIA_API_KEY: '', OWNER_WALLET: 'new-owner' }),
+    mergeSensitiveInput(current, { HOT_WALLET_SECRET: SENSITIVE_PLACEHOLDER, AEPHIA_API_KEY: '', OWNER_WALLET: 'new-owner' }),
     { HOT_WALLET_SECRET: 'wallet-secret', AEPHIA_API_KEY: '', OWNER_WALLET: 'new-owner' },
   );
 });

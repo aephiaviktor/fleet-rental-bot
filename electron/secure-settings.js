@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const ENCRYPTED_PREFIX = 'safeStorage:v1:';
 const REDACTED_VALUE = '••••••••';
+const SENSITIVE_PLACEHOLDER = 'Stored securely — enter a new value to replace';
 const SENSITIVE_CONFIG_KEYS = Object.freeze([
   'HOT_WALLET_SECRET',
   'AEPHIA_API_KEY',
@@ -48,7 +49,7 @@ function decryptSensitiveSettings(config, safeStorage) {
 function redactSensitiveSettings(config) {
   const result = { ...(config || {}) };
   for (const key of SENSITIVE_CONFIG_KEYS) {
-    if (String(result[key] ?? '')) result[key] = REDACTED_VALUE;
+    if (String(result[key] ?? '')) result[key] = SENSITIVE_PLACEHOLDER;
   }
   return result;
 }
@@ -56,7 +57,7 @@ function redactSensitiveSettings(config) {
 function mergeSensitiveInput(current, incoming) {
   const result = { ...(current || {}), ...(incoming || {}) };
   for (const key of SENSITIVE_CONFIG_KEYS) {
-    if (incoming?.[key] === REDACTED_VALUE) result[key] = current?.[key] ?? '';
+    if (incoming?.[key] === REDACTED_VALUE || incoming?.[key] === SENSITIVE_PLACEHOLDER) result[key] = current?.[key] ?? '';
   }
   return result;
 }
@@ -89,6 +90,7 @@ async function migrateSettingsFile(fs, targetPath, safeStorage) {
 module.exports = {
   ENCRYPTED_PREFIX,
   REDACTED_VALUE,
+  SENSITIVE_PLACEHOLDER,
   SENSITIVE_CONFIG_KEYS,
   decryptSensitiveSettings,
   encryptSensitiveSettings,
