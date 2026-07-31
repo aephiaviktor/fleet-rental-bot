@@ -9,6 +9,7 @@ function createHarness({ primaryResult = 'primary', primaryError = null, fallbac
   const calls = [];
   const waits = [];
   const warnings = [];
+  const outcomes = [];
   const connections = {
     'https://primary.example': {
       label: 'primary-property',
@@ -50,30 +51,44 @@ function createHarness({ primaryResult = 'primary', primaryError = null, fallbac
       createConnection(url) { return connections[url]; },
       limiter: {
         async wait(label, bucket, method) { waits.push([label, bucket, method]); },
+        async recordProviderOutcome(provider, outcome) { outcomes.push([provider, outcome]); },
       },
     },
   );
-  return { calls, connection, waits, warnings };
+  return { calls, connection, outcomes, waits, warnings };
 }
 
-test('read RPC methods use rpc:shared and return the primary result', async () => {
-  const { calls, connection, waits } = createHarness();
+test('read RPC methods use rpc:shared, return primary, and report provider success', async () => {
+  const { calls, connection, outcomes, waits } = createHarness();
 
   assert.equal(await connection.getBalance('wallet'), 'primary');
   assert.deepEqual(calls, [['primary', 'getBalance', 'wallet']]);
   assert.deepEqual(waits, [['Connection.getBalance()', 'rpc:shared', 'getBalance']]);
+  assert.deepEqual(outcomes, [['main', 'ok']]);
 });
 
-test('sendRawTransaction uses tx:shared', async () => {
-  const { connection, waits } = createHarness();
+test('sendRawTransaction uses tx:shared and reports primary success', async () => {
+  const { connection, outcomes, waits } = createHarness();
 
   assert.equal(await connection.sendRawTransaction('serialized'), 'primary');
   assert.deepEqual(waits, [['Connection.sendRawTransaction()', 'tx:shared', 'sendRawTransaction']]);
+  assert.deepEqual(outcomes, [['main', 'ok']]);
 });
 
-test('current failover retries any primary error through the same limiter bucket', async () => {
+test('ambiguous transaction submission errors are reported but never retried through fallback', async () => {
+  const failure = Object.assign(new Error('429 rate limited after submission'), { status: 429 });
+  const { calls, connection, outcomes, waits, warnings } = createHarness({ primaryError: failure });
+
+  await assert.rejects(connection.sendRawTransaction('serialized'), failure);
+  assert.deepEqual(calls, [['primary', 'sendRawTransaction', 'serialized']]);
+  assert.deepEqual(waits, [['Connection.sendRawTransaction()', 'tx:shared', 'sendRawTransaction']]);
+  assert.deepEqual(outcomes, [['main', 'rate_limited']]);
+  assert.equal(warnings.length, 0);
+});
+
+test('read failover reports provider outcomes and retries through the same limiter bucket', async () => {
   const failure = new Error('primary unavailable');
-  const { calls, connection, waits, warnings } = createHarness({ primaryError: failure });
+  const { calls, connection, outcomes, waits, warnings } = createHarness({ primaryError: failure });
 
   assert.equal(await connection.getBalance('wallet'), 'fallback');
   assert.deepEqual(calls, [
@@ -83,6 +98,10 @@ test('current failover retries any primary error through the same limiter bucket
   assert.deepEqual(waits, [
     ['Connection.getBalance()', 'rpc:shared', 'getBalance'],
     ['fallback Connection.getBalance()', 'rpc:shared', 'getBalance'],
+  ]);
+  assert.deepEqual(outcomes, [
+    ['main', 'error'],
+    ['fallback', 'ok'],
   ]);
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0][1], failure);

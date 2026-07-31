@@ -22,7 +22,9 @@ const updateMessageEl = document.getElementById('update-message');
 const updateConfirmBtn = document.getElementById('update-confirm-btn');
 const updateCancelBtn = document.getElementById('update-cancel-btn');
 const sendRpcLimiterBtn = document.getElementById('send-rpc-limiter-btn');
-const rpcLimiterCurrentUrlEl = document.getElementById('rpc-limiter-current-url');
+const rpcLimiterMainUrlEl = document.getElementById('rpc-limiter-main-url');
+const rpcLimiterFallbackUrlEl = document.getElementById('rpc-limiter-fallback-url');
+const rpcLimiterRoutingModeEl = document.getElementById('rpc-limiter-routing-mode');
 const rpcLimiterStatePathEl = document.getElementById('rpc-limiter-state-path');
 const rpcLimiterUpdatedEl = document.getElementById('rpc-limiter-updated');
 const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
@@ -367,15 +369,24 @@ function setConfigValues(config) {
 }
 
 function renderRpcLimiterStatus(status) {
-  if (!rpcLimiterCurrentUrlEl || !rpcLimiterStatePathEl || !rpcLimiterUpdatedEl) return;
+  if (!rpcLimiterMainUrlEl || !rpcLimiterFallbackUrlEl || !rpcLimiterStatePathEl || !rpcLimiterUpdatedEl) return;
   if (!status) {
-    rpcLimiterCurrentUrlEl.value = '';
+    rpcLimiterMainUrlEl.value = '';
+    rpcLimiterFallbackUrlEl.value = '';
+    if (rpcLimiterRoutingModeEl) rpcLimiterRoutingModeEl.textContent = 'Routing: —';
     rpcLimiterStatePathEl.textContent = '—';
     rpcLimiterUpdatedEl.textContent = '';
     return;
   }
 
-  rpcLimiterCurrentUrlEl.value = status.currentRpcUrl || '';
+  rpcLimiterMainUrlEl.value = status.providers?.main?.currentRpcUrl || '';
+  rpcLimiterFallbackUrlEl.value = status.providers?.fallback?.currentRpcUrl || '';
+  const cooldownProviders = ['main', 'fallback'].filter((id) => status.providers?.[id]?.inCooldown);
+  if (rpcLimiterRoutingModeEl) {
+    const mode = status.routingMode === 'main-preferred' ? 'main preferred (fleet race active)' : '50/50 round-robin';
+    const cooldown = cooldownProviders.length ? ` · cooldown: ${cooldownProviders.join(', ')}` : '';
+    rpcLimiterRoutingModeEl.textContent = `Routing: ${mode}${cooldown}`;
+  }
   rpcLimiterStatePathEl.textContent = status.path || '—';
   const updatedParts = [];
   if (status.updatedBy) updatedParts.push(`updated by ${status.updatedBy}`);

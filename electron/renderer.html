@@ -102,8 +102,12 @@
                       <input class="sensitive-field" name="AEPHIA_API_KEY" type="text" autocomplete="off" spellcheck="false" />
                     </label>
                     <label>
-                      RPC URL
+                      Main RPC URL
                       <input class="sensitive-field" name="RPC_URL" type="text" autocomplete="off" />
+                    </label>
+                    <label>
+                      Fallback RPC URL
+                      <input class="sensitive-field" name="RPC_URL_FALLBACK" type="text" autocomplete="off" />
                     </label>
                     <label>
                       Hot Wallet Secret
@@ -159,6 +163,26 @@
                       </label>
                     </section>
                   </div>
+
+                  <section class="panel rpc-limiter-panel">
+                    <div class="panel-toolbar">
+                      <h2>RPC Limiter v2</h2>
+                      <button id="send-rpc-limiter-btn" type="button">Send Both RPC URLs</button>
+                    </div>
+                    <div class="config-grid">
+                      <label>
+                        Limiter Main Provider
+                        <input class="sensitive-field" id="rpc-limiter-main-url" type="text" readonly />
+                      </label>
+                      <label>
+                        Limiter Fallback Provider
+                        <input class="sensitive-field" id="rpc-limiter-fallback-url" type="text" readonly />
+                      </label>
+                    </div>
+                    <p id="rpc-limiter-routing-mode">Routing: —</p>
+                    <small id="rpc-limiter-state-path">—</small>
+                    <small id="rpc-limiter-updated"></small>
+                  </section>
 
                   <div class="panel setup-logs-panel">
                     <h2>Logs</h2>

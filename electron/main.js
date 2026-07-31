@@ -31,6 +31,10 @@ const {
   assertWalletLookupPayload,
   assertWalletSecretPayload,
 } = require('./security-policy');
+const {
+  applyProviderSettings,
+  buildRpcLimiterV2Status,
+} = require('./rpc-limiter-v2-policy');
 
 // ---------------------------------------------------------------------------
 // Profile isolation — one codebase can run multiple local profiles.
@@ -528,50 +532,10 @@ function getRpcLimiterPaths() {
   return resolvePaths();
 }
 
-function buildSharedRpcUrl(state) {
-  const base = String(state?.rpcBaseUrl || '').trim();
-  const apiKey = String(state?.apiKey || '').trim();
-  if (!base) return '';
-  if (!apiKey) return base;
-  try {
-    const url = new URL(base);
-    url.searchParams.set('api-key', apiKey);
-    return url.toString();
-  } catch {
-    const separator = base.includes('?') ? '&' : '?';
-    return `${base}${separator}api-key=${encodeURIComponent(apiKey)}`;
-  }
-}
-
 function getRpcLimiterStatus() {
   const paths = getRpcLimiterPaths();
   const state = readRpcLimiterState(paths.stateFile, Date.now());
-  return {
-    path: paths.stateFile,
-    enabled: Boolean(state.enabled),
-    rpcBaseUrl: state.rpcBaseUrl || '',
-    apiKey: state.apiKey || '',
-    currentRpcUrl: buildSharedRpcUrl(state),
-    buckets: state.buckets || {},
-    updatedBy: state.updatedBy || '',
-    updatedAt: state.updatedAt || '',
-    revision: state.revision ?? 0,
-  };
-}
-
-function parseRpcUrlForLimiter(rawValue) {
-  const raw = String(rawValue || '').trim();
-  if (!raw) {
-    throw new Error('RPC URL is empty.');
-  }
-
-  const url = new URL(raw);
-  const apiKey = url.searchParams.get('api-key') || '';
-  url.searchParams.delete('api-key');
-  const remainingQuery = url.searchParams.toString();
-  const pathname = url.pathname === '/' ? '' : url.pathname;
-  const rpcBaseUrl = `${url.origin}${pathname}${remainingQuery ? `?${remainingQuery}` : ''}`;
-  return { rpcBaseUrl, apiKey };
+  return buildRpcLimiterV2Status(state, paths.stateFile, Date.now());
 }
 
 function parsePositiveRate(value, fieldName) {
@@ -602,7 +566,8 @@ async function withRpcLimiterLock(fn) {
 }
 
 async function sendSettingsToRpcLimiter(config) {
-  const { rpcBaseUrl, apiKey } = parseRpcUrlForLimiter(config.RPC_URL);
+  if (!String(config.RPC_URL || '').trim()) throw new Error('Main RPC URL is empty.');
+  if (!String(config.RPC_URL_FALLBACK || '').trim()) throw new Error('Fallback RPC URL is empty.');
   const rpcRequestsPerSecond = parsePositiveRate(config.RPC_REQUESTS_PER_SECOND, 'Requests / sec');
   const txPerSecond = parsePositiveRate(config.RPC_TX_SEND_RATE_LIMIT_PER_SECOND, 'sendTransaction / sec');
   const rpcIntervalMs = Math.max(1, Math.round(1000 / rpcRequestsPerSecond));
@@ -611,8 +576,7 @@ async function sendSettingsToRpcLimiter(config) {
   await withRpcLimiterLock((paths) => {
     const state = readRpcLimiterState(paths.stateFile, Date.now());
     state.enabled = true;
-    state.rpcBaseUrl = rpcBaseUrl;
-    state.apiKey = apiKey;
+    applyProviderSettings(state, config);
     state.buckets = state.buckets || {};
     state.buckets['rpc:shared'] = {
       ...(state.buckets['rpc:shared'] || { nextSlotMs: 0 }),
@@ -898,9 +862,17 @@ function getDisplayAccounts(config) {
 }
 
 function redactRpcLimiterStatus(status) {
+  const providers = {};
+  for (const providerId of ['main', 'fallback']) {
+    const provider = status?.providers?.[providerId] || {};
+    providers[providerId] = {
+      ...provider,
+      currentRpcUrl: provider.currentRpcUrl ? REDACTED_VALUE : '',
+    };
+  }
   return {
     ...status,
-    apiKey: status?.apiKey ? REDACTED_VALUE : '',
+    providers,
     currentRpcUrl: status?.currentRpcUrl ? REDACTED_VALUE : '',
   };
 }

@@ -19,7 +19,7 @@ import {
   TransactionInstruction,
   VersionedTransaction,
 } from '@solana/web3.js';
-import { RpcLimiter } from 'rpc_limiter';
+import { ProviderId, RpcLimiter } from 'rpc_limiter';
 import { parsePersistedStateText, parseRecentActivityText, serializePersistedState } from './persistence-policy';
 
 export const DEFAULT_SRSLY_PROGRAM_ID = 'SRSLY1fq9TJqCk1gNSE7VZL2bztvTn9wm4VR8u8jMKT';
@@ -79,7 +79,7 @@ export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.29';
+export const APP_VERSION = '0.2.30';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -283,6 +283,7 @@ type RpcMethodCounterSnapshot = {
 
 type RpcWaitLimiter = {
   wait: (label: string, bucketName?: 'rpc:shared' | 'tx:shared', method?: string) => Promise<void>;
+  recordProviderOutcome?: (provider: ProviderId, outcome: 'ok' | 'rate_limited' | 'error') => Promise<void>;
 };
 
 export type RpcConnectionTestSeams = {
@@ -530,6 +531,34 @@ class SharedRpcRequestLimiter {
       this.lastSharedWaitLogAtMs.set(logKey, now);
     }
   }
+
+  async recordProviderOutcome(provider: ProviderId, outcome: 'ok' | 'rate_limited' | 'error'): Promise<void> {
+    if (!this.useSharedLimiter()) return;
+    await this.sharedLimiter.recordProviderOutcome(provider, outcome);
+  }
+}
+
+function isRateLimitedRpcError(error: unknown): boolean {
+  if (typeof error === 'object' && error) {
+    const record = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+    if (record.status === 429 || record.statusCode === 429 || record.code === 429) return true;
+  }
+  return /(?:^|\D)429(?:\D|$)|rate[ -]?limit/i.test(formatError(error));
+}
+
+async function invokeRpcForProvider<T>(
+  provider: ProviderId,
+  invoke: () => Promise<T>,
+  limiter: RpcWaitLimiter,
+): Promise<T> {
+  try {
+    const result = await invoke();
+    await limiter.recordProviderOutcome?.(provider, 'ok');
+    return result;
+  } catch (error) {
+    await limiter.recordProviderOutcome?.(provider, isRateLimitedRpcError(error) ? 'rate_limited' : 'error');
+    throw error;
+  }
 }
 
 async function callRpcWithSharedLimiter<T>(
@@ -648,7 +677,13 @@ export function createFailoverConnection(
           const method = String(prop);
           const label = `Connection.${String(prop)}()`;
           const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
-          return callCountedRpc(label, () => primaryValue.apply(target, args), bucketName, method, 'network');
+          return callCountedRpc(
+            label,
+            () => invokeRpcForProvider('main', () => primaryValue.apply(target, args), limiter),
+            bucketName,
+            method,
+            'network',
+          );
         };
       },
     }) as Connection;
@@ -664,14 +699,22 @@ export function createFailoverConnection(
       return async (...args: unknown[]) => {
         const method = String(prop);
         const label = `Connection.${String(prop)}()`;
-        const bucketName = prop === 'sendRawTransaction' ? 'tx:shared' : 'rpc:shared';
+        const isTransactionSubmission = method === 'sendRawTransaction' || method === 'sendTransaction' || method === 'sendEncodedTransaction';
+        const bucketName = isTransactionSubmission ? 'tx:shared' : 'rpc:shared';
         try {
-          return await callCountedRpc(label, () => primaryValue.apply(target, args), bucketName, method, 'network');
+          return await callCountedRpc(
+            label,
+            () => invokeRpcForProvider('main', () => primaryValue.apply(target, args), limiter),
+            bucketName,
+            method,
+            'network',
+          );
         } catch (error) {
+          if (isTransactionSubmission) throw error;
           logger.warn(`Primary RPC failed for Connection.${String(prop)}(), trying fallback RPC.`, error);
           return await callCountedRpc(
             `fallback Connection.${String(prop)}()`,
-            () => fallbackValue.apply(fallback, args),
+            () => invokeRpcForProvider('fallback', () => fallbackValue.apply(fallback, args), limiter),
             bucketName,
             method,
             'fallback',
