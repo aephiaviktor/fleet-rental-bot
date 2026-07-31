@@ -20,6 +20,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { RpcLimiter } from 'rpc_limiter';
+import { parsePersistedStateText, parseRecentActivityText, serializePersistedState } from './persistence-policy';
 
 export const DEFAULT_SRSLY_PROGRAM_ID = 'SRSLY1fq9TJqCk1gNSE7VZL2bztvTn9wm4VR8u8jMKT';
 export const SAGE_PROGRAM_ID = 'SAGE2HAwep459SNq61LHvjxPk4pLPEJLoMETef7f7EE';
@@ -2707,23 +2708,16 @@ export class FleetRentalBot {
   }
 
   private async loadState() {
-    try {
-      const raw = await fs.readFile(this.stateFilePath, 'utf8');
-      const parsed = JSON.parse(raw) as PersistedState;
-      for (const [key, value] of Object.entries(parsed)) {
-        this.runtimeByRule.set(key, { ...this.createInitialRuntimeState(), ...value });
-      }
-    } catch {
-      this.runtimeByRule.clear();
+    const raw = await fs.readFile(this.stateFilePath, 'utf8').catch(() => '');
+    const parsed = parsePersistedStateText<RuleRuntimeState>(raw);
+    this.runtimeByRule.clear();
+    for (const [key, value] of Object.entries(parsed)) {
+      this.runtimeByRule.set(key, { ...this.createInitialRuntimeState(), ...value });
     }
   }
 
   private async saveState() {
-    const payload: PersistedState = {};
-    for (const [key, value] of this.runtimeByRule.entries()) {
-      payload[key] = value;
-    }
-    await fs.writeFile(this.stateFilePath, JSON.stringify(payload, null, 2), 'utf8');
+    await fs.writeFile(this.stateFilePath, serializePersistedState(this.runtimeByRule.entries()), 'utf8');
   }
 
   private async appendLog(event: Record<string, unknown>) {
@@ -2734,12 +2728,7 @@ export class FleetRentalBot {
   private async readRecentActivity(): Promise<FleetRentalActivity[]> {
     try {
       const raw = await fs.readFile(this.logFilePath, 'utf8');
-      return raw
-        .split('\n')
-        .filter(Boolean)
-        .slice(-RECENT_ACTIVITY_LIMIT)
-        .map((line) => JSON.parse(line) as FleetRentalActivity)
-        .reverse();
+      return parseRecentActivityText<FleetRentalActivity>(raw, RECENT_ACTIVITY_LIMIT);
     } catch {
       return [];
     }
