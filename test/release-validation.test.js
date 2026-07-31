@@ -22,7 +22,7 @@ async function createReleaseFixture({ limiterVersion = '0.2.0', limiterResolved 
   await fs.mkdir(path.join(root, 'electron'), { recursive: true });
   await fs.writeFile(path.join(root, 'package.json'), JSON.stringify(packageJson), 'utf8');
   await fs.writeFile(path.join(root, 'package-lock.json'), JSON.stringify(packageLock), 'utf8');
-  for (const file of ['main.js', 'preload.js', 'renderer.html', 'secure-settings.js', 'security-policy.js', 'rpc-limiter-v2-policy.js', 'profile-policy.js']) {
+  for (const file of ['main.js', 'preload.js', 'renderer.html', 'secure-settings.js', 'security-policy.js', 'rpc-limiter-v2-policy.js', 'profile-policy.js', 'dependency-reuse-policy.js']) {
     await fs.writeFile(path.join(root, 'electron', file), '', 'utf8');
   }
   if (includeBuild) {

@@ -42,6 +42,7 @@ async function validateReleaseTree(fs, root, options = {}) {
     'electron/security-policy.js',
     'electron/rpc-limiter-v2-policy.js',
     'electron/profile-policy.js',
+    'electron/dependency-reuse-policy.js',
   ]) {
     await requireFile(fs, root, relativePath);
   }
