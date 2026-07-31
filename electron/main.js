@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, Menu, dialog, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, powerSaveBlocker, safeStorage, session } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const os = require('os');
@@ -15,6 +16,21 @@ const {
   normalizeVersion,
   shouldCopyUpdatePath,
 } = require('./update-policy');
+const {
+  REDACTED_VALUE,
+  decryptSensitiveSettings,
+  encryptSensitiveSettings,
+  mergeSensitiveInput,
+  redactSensitiveSettings,
+  writeJsonAtomic,
+} = require('./secure-settings');
+const {
+  assertRuleResolvePayload,
+  assertSettingsPayload,
+  assertTrustedIpcSender,
+  assertWalletLookupPayload,
+  assertWalletSecretPayload,
+} = require('./security-policy');
 
 // ---------------------------------------------------------------------------
 // Profile isolation — one codebase can run multiple local profiles.
@@ -616,26 +632,36 @@ async function sendSettingsToRpcLimiter(config) {
 }
 
 async function loadLocalSettings() {
-  try {
-    const raw = await fs.readFile(getSettingsPath(), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    // Instance-specific file doesn't exist yet — fall back to the original
-    // default settings so first launch of a new instance isn't blank.
+  const candidatePaths = [getSettingsPath(), DEFAULT_SETTINGS_PATH];
+  for (const settingsPath of candidatePaths) {
+    let raw;
     try {
-      const raw = await fs.readFile(DEFAULT_SETTINGS_PATH, 'utf8');
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-      return {};
+      raw = await fs.readFile(settingsPath, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
     }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const clearSettings = decryptSensitiveSettings(parsed, safeStorage);
+    const encryptedSettings = encryptSensitiveSettings(clearSettings, safeStorage);
+    if (JSON.stringify(encryptedSettings) !== JSON.stringify(parsed)) {
+      await writeJsonAtomic(fs, settingsPath, encryptedSettings);
+    }
+    return clearSettings;
   }
+  return {};
 }
 
 async function saveLocalSettings(payload) {
   const current = await loadLocalSettings();
   const sourceConfig = payload?.config && typeof payload.config === 'object' ? payload.config : payload;
+  const mergedSource = mergeSensitiveInput(current, sourceConfig);
   const filtered = {};
 
   // Always preserve every key that already exists in the settings file.
@@ -647,15 +673,14 @@ async function saveLocalSettings(payload) {
   // Override with whatever the client sent (only keys present in the payload).
   for (const key of EDITABLE_CONFIG_KEYS) {
     if (Object.prototype.hasOwnProperty.call(sourceConfig || {}, key)) {
-      filtered[key] = String(sourceConfig[key] ?? '');
+      filtered[key] = String(mergedSource[key] ?? '');
     }
   }
 
   filtered.USE_RPC_LIMITER = 'false';
 
   filtered.RENTAL_RULE_ROWS = normalizeRentalRules(payload?.rentalRules ?? current.RENTAL_RULE_ROWS ?? []);
-  await fs.mkdir(path.dirname(getSettingsPath()), { recursive: true });
-  await fs.writeFile(getSettingsPath(), JSON.stringify(filtered, null, 2), 'utf8');
+  await writeJsonAtomic(fs, getSettingsPath(), encryptSensitiveSettings(filtered, safeStorage));
   return filtered;
 }
 
@@ -780,10 +805,19 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      navigateOnDragDrop: false,
       backgroundThrottling: false,
     },
   });
   attachWindowCrashLogging(mainWindow);
+
+  const rendererUrl = pathToFileURL(path.join(__dirname, 'renderer.html')).href;
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    if (targetUrl !== rendererUrl) event.preventDefault();
+  });
 
   // Keep the instance suffix even when renderer.html's <title> fires a
   // page-title-updated event after load.
@@ -815,6 +849,9 @@ if (!hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     const powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension')
     console.log(`[FleetRentalBot] prevent-app-suspension blocker=${powerSaveBlockerId} active=${powerSaveBlocker.isStarted(powerSaveBlockerId)}`)
+
+    session.defaultSession.setPermissionCheckHandler(() => false);
+    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
 
     installApplicationMenu();
     createWindow();
@@ -860,18 +897,36 @@ function getDisplayAccounts(config) {
   };
 }
 
-ipcMain.handle('settings:get', async () => {
+function redactRpcLimiterStatus(status) {
+  return {
+    ...status,
+    apiKey: status?.apiKey ? REDACTED_VALUE : '',
+    currentRpcUrl: status?.currentRpcUrl ? REDACTED_VALUE : '',
+  };
+}
+
+const TRUSTED_RENDERER_URL = pathToFileURL(path.join(__dirname, 'renderer.html')).href;
+
+function handleTrusted(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    assertTrustedIpcSender(event, TRUSTED_RENDERER_URL);
+    return handler(event, ...args);
+  });
+}
+
+handleTrusted('settings:get', async () => {
   const config = await getEffectiveEditableConfig();
   const localSettings = await loadLocalSettings();
   return {
-    config,
-    rpcLimiter: getRpcLimiterStatus(),
+    config: redactSensitiveSettings(config),
+    rpcLimiter: redactRpcLimiterStatus(getRpcLimiterStatus()),
     displayAccounts: getDisplayAccounts(config),
     rentalRules: normalizeRentalRules(localSettings.RENTAL_RULE_ROWS ?? []),
   };
 });
 
-ipcMain.handle('settings:save', async (_event, payload) => {
+handleTrusted('settings:save', async (_event, payload) => {
+  assertSettingsPayload(payload, EDITABLE_CONFIG_KEYS);
   const settings = await saveLocalSettings(payload);
   let restarted = false;
 
@@ -881,46 +936,56 @@ ipcMain.handle('settings:save', async (_event, payload) => {
     restarted = true;
   }
 
-  return { settings, rpcLimiter: getRpcLimiterStatus(), restarted };
+  return {
+    settings: redactSensitiveSettings(settings),
+    rpcLimiter: redactRpcLimiterStatus(getRpcLimiterStatus()),
+    displayAccounts: getDisplayAccounts(settings),
+    restarted,
+  };
 });
 
-ipcMain.handle('rpc-limiter:send-settings', async (_event, payload) => {
+handleTrusted('rpc-limiter:send-settings', async (_event, payload) => {
+  assertSettingsPayload(payload, EDITABLE_CONFIG_KEYS);
   const sourceConfig = payload?.config && typeof payload.config === 'object' ? payload.config : payload;
-  return await sendSettingsToRpcLimiter(sourceConfig || {});
+  const effectiveConfig = await getEffectiveEditableConfig();
+  const mergedConfig = mergeSensitiveInput(effectiveConfig, sourceConfig || {});
+  return redactRpcLimiterStatus(await sendSettingsToRpcLimiter(mergedConfig));
 });
 
-ipcMain.handle('rpc-limiter:get-status', async () => getRpcLimiterStatus());
+handleTrusted('rpc-limiter:get-status', async () => redactRpcLimiterStatus(getRpcLimiterStatus()));
 
-ipcMain.handle('bot:start', async () => {
+handleTrusted('bot:start', async () => {
   await startBotFromSettings();
   return { ok: true };
 });
 
-ipcMain.handle('bot:stop', async () => {
+handleTrusted('bot:stop', async () => {
   await stopBot();
   return { ok: true };
 });
 
-ipcMain.handle('bot:status', async () => {
+handleTrusted('bot:status', async () => {
   if (!bot) return getEmptyStatusSnapshot();
   return bot.getStatusSnapshot();
 });
 
-ipcMain.handle('app:get-version', async () => {
+handleTrusted('app:get-version', async () => {
   return { version: packageJson.version || 'unknown' };
 });
 
-ipcMain.handle('updates:check', async () => {
+handleTrusted('updates:check', async () => {
   return await checkForUpdates();
 });
 
-ipcMain.handle('updates:download-and-restart', async () => {
+handleTrusted('updates:download-and-restart', async () => {
   return await downloadUpdateAndRestart();
 });
 
 // Look up on-chain data for a given hot wallet public key.
 // Derives the Player Profile PDA and checks if it exists on-chain.
-ipcMain.handle('wallet:lookup', async (_event, { hotWalletPublicKey }) => {
+handleTrusted('wallet:lookup', async (_event, payload) => {
+  assertWalletLookupPayload(payload);
+  const { hotWalletPublicKey } = payload;
   console.error('[wallet:lookup] hotWalletPublicKey =', hotWalletPublicKey);
   try {
     const config = await getEffectiveBotInputConfig();
@@ -948,11 +1013,13 @@ ipcMain.handle('wallet:lookup', async (_event, { hotWalletPublicKey }) => {
   }
 });
 
-ipcMain.handle('app:get-instance-name', () => {
+handleTrusted('app:get-instance-name', () => {
   return _instanceName || '';
 });
 
-ipcMain.handle('wallet:get-address', async (_event, { secret }) => {
+handleTrusted('wallet:get-address', async (_event, payload) => {
+  assertWalletSecretPayload(payload);
+  const { secret } = payload;
   try {
     const address = getHotWalletAddressFromSecret(secret);
     console.error('[wallet:get-address] address =', address);
@@ -963,7 +1030,8 @@ ipcMain.handle('wallet:get-address', async (_event, { secret }) => {
   }
 });
 
-ipcMain.handle('rules:resolve', async (_event, payload) => {
+handleTrusted('rules:resolve', async (_event, payload) => {
+  assertRuleResolvePayload(payload);
   const config = await getEffectiveBotInputConfig();
   return resolveRentalRuleDetails({
     rpcUrl: config.RPC_URL,

@@ -475,7 +475,8 @@ async function saveSettings() {
     validateHeliusSenderSettings();
     const result = await window.botApi.saveSettings({ config: getConfigValues(), rentalRules: getRentalRulesFromForm() });
     if (result?.rpcLimiter) renderRpcLimiterStatus(result.rpcLimiter);
-    refreshDisplayAccountsFromForm();
+    if (result?.displayAccounts) setDisplayAccounts(result.displayAccounts);
+    else refreshDisplayAccountsFromForm();
     appendLog({
       timestamp: new Date().toISOString(),
       level: 'INFO',
