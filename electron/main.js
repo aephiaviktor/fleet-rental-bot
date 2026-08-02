@@ -451,7 +451,28 @@ async function downloadUpdateAndRestart() {
   }
   emitUpdateProgress('building', 'Building and validating the updated application...');
   await runCommand('npm', ['run', 'build'], { cwd: stagedRoot });
-  await validateReleaseTree(fs, stagedRoot, { platform: process.platform });
+  // Use the *new* release's release-validation.js as the source of truth for
+  // required files. This lets intentionally-removed files (e.g. v2 limiter
+  // policy) be absent from the new release without failing the update. Falls
+  // back to the old hardcoded list if the staged release doesn't export
+  // getRequiredFiles (backward compatible with old releases).
+  let stagedRequiredFiles;
+  try {
+    const stagedValidationPath = path.join(stagedRoot, 'electron', 'release-validation.js');
+    const stagedValidation = require(stagedValidationPath);
+    if (typeof stagedValidation.getRequiredFiles === 'function') {
+      const fromNew = stagedValidation.getRequiredFiles({ platform: process.platform });
+      if (Array.isArray(fromNew) && fromNew.every((f) => typeof f === 'string')) {
+        stagedRequiredFiles = fromNew;
+      }
+    }
+  } catch {
+    // staged release's release-validation.js is missing or broken — fall back to default
+  }
+  await validateReleaseTree(fs, stagedRoot, {
+    platform: process.platform,
+    ...(stagedRequiredFiles ? { requiredFiles: stagedRequiredFiles } : {}),
+  });
   await fs.writeFile(path.join(stagedRoot, '.update-release.json'), JSON.stringify({
     version: latest.version,
     branch: latest.branch,

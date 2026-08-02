@@ -15,6 +15,32 @@ async function requireFile(fs, root, relativePath, label = relativePath) {
   }
 }
 
+/**
+ * Returns the list of files required for a valid release tree.
+ *
+ * This is the source of truth for required files. The updater reads the *new*
+ * release's `getRequiredFiles` (not the old updater's hardcoded list), so
+ * intentionally removed files don't block updates. If the new release is an
+ * old version that doesn't export `getRequiredFiles`, the old updater falls
+ * back to its own hardcoded list — backward compatible.
+ */
+function getRequiredFiles(options = {}) {
+  const electronBinary = options.platform === 'win32'
+    ? 'node_modules/electron/dist/electron.exe'
+    : 'node_modules/electron/dist/electron';
+  return [
+    'dist/bot.js',
+    'electron/main.js',
+    'electron/preload.js',
+    'electron/renderer.html',
+    'electron/secure-settings.js',
+    'electron/security-policy.js',
+    'electron/profile-policy.js',
+    'electron/dependency-reuse-policy.js',
+    electronBinary,
+  ];
+}
+
 async function validateReleaseTree(fs, root, options = {}) {
   const packageJson = await readJson(fs, path.join(root, 'package.json'));
   const packageLock = await readJson(fs, path.join(root, 'package-lock.json'));
@@ -33,24 +59,12 @@ async function validateReleaseTree(fs, root, options = {}) {
     throw new Error('Staged release requires RPC Limiter from a pinned HTTPS archive.');
   }
 
-  for (const relativePath of [
-    'dist/bot.js',
-    'electron/main.js',
-    'electron/preload.js',
-    'electron/renderer.html',
-    'electron/secure-settings.js',
-    'electron/security-policy.js',
-    'electron/profile-policy.js',
-    'electron/dependency-reuse-policy.js',
-  ]) {
-    await requireFile(fs, root, relativePath);
+  const requiredFiles = Array.isArray(options.requiredFiles) ? options.requiredFiles : getRequiredFiles(options);
+  for (const relativePath of requiredFiles) {
+    const label = relativePath.includes('electron/dist/') ? 'Electron runtime' : relativePath;
+    await requireFile(fs, root, relativePath, label);
   }
-
-  const electronBinary = options.platform === 'win32'
-    ? 'node_modules/electron/dist/electron.exe'
-    : 'node_modules/electron/dist/electron';
-  await requireFile(fs, root, electronBinary, 'Electron runtime');
   return { appVersion, rpcLimiterVersion };
 }
 
-module.exports = { validateReleaseTree };
+module.exports = { validateReleaseTree, getRequiredFiles };
