@@ -807,11 +807,32 @@ function createWindow() {
 
 installCrashEventLogging();
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+// ---------------------------------------------------------------------------
+// Single-instance lock with bounded retry. The previous implementation called
+// `app.requestSingleInstanceLock()` once and quit on failure. That broke when a
+// previous instance was force-killed (e.g. `taskkill /F`, WSL `timeout` that
+// does not propagate to the Windows child) and left the underlying Windows
+// mutex orphaned: every new instance would fail to acquire the lock and exit
+// cleanly within a few hundred milliseconds. We now retry with a short delay.
+// ---------------------------------------------------------------------------
+const SINGLE_INSTANCE_LOCK_MAX_ATTEMPTS = 5;
+const SINGLE_INSTANCE_LOCK_RETRY_DELAY_MS = 3000;
 
-if (!hasSingleInstanceLock) {
-  app.quit();
-} else {
+function tryAcquireSingleInstanceLock(attempt = 1) {
+  if (app.requestSingleInstanceLock()) {
+    setupAppAfterSingleInstanceLock();
+    return;
+  }
+  if (attempt < SINGLE_INSTANCE_LOCK_MAX_ATTEMPTS) {
+    console.warn(`[FleetRentalBot] single-instance lock attempt ${attempt}/${SINGLE_INSTANCE_LOCK_MAX_ATTEMPTS} failed; retrying in ${SINGLE_INSTANCE_LOCK_RETRY_DELAY_MS / 1000}s`);
+    setTimeout(() => tryAcquireSingleInstanceLock(attempt + 1), SINGLE_INSTANCE_LOCK_RETRY_DELAY_MS);
+  } else {
+    console.error(`[FleetRentalBot] single-instance lock failed after ${SINGLE_INSTANCE_LOCK_MAX_ATTEMPTS} attempts; another instance may be holding it. Quitting.`);
+    app.quit();
+  }
+}
+
+function setupAppAfterSingleInstanceLock() {
   app.on('second-instance', () => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -852,6 +873,8 @@ if (!hasSingleInstanceLock) {
     }
   });
 }
+
+tryAcquireSingleInstanceLock();
 
 function getDisplayAccounts(config) {
   let hotWalletAddress = '—';
