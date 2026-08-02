@@ -34,6 +34,14 @@ export const DEFAULT_RENTER_WALLET = '';
 export const GENERAL_CHECK_INTERVAL_SECONDS = 3600;
 export const DEFAULT_AGGRESSIVE_START_BEFORE_END_SECONDS = 1;
 export const DEFAULT_AGGRESSIVE_STOP_AFTER_END_SECONDS = 1.5;
+
+// Cross-instance aggressive-skip coordination. Each instance writes its pending
+// fleet list to a shared directory; before scheduling aggressive sending, every
+// instance reads all three and skips if any instance reports a pending fleet
+// (program is likely in a buggy state where relisting is broken).
+export const CROSS_INSTANCE_STATUS_DIR = path.join('C:', 'Apps', 'fleet-rental-bot-shared');
+export const CROSS_INSTANCE_STATUS_TTL_MS = 5 * 60 * 1000;
+export const CROSS_INSTANCE_STATUS_HEARTBEAT_MS = 30 * 1000;
 export const DEFAULT_AGGRESSIVE_SEND_INTERVAL_MS = 100;
 export const NORMAL_RPC_AGGRESSIVE_SEND_INTERVAL_MS = 1000;
 export const MAX_AGGRESSIVE_ATTEMPTS_PER_RULE = 160;
@@ -79,7 +87,7 @@ export const CONFIRMED_AVAILABILITY_DECODE_FAILURE_CACHE_MS = 10 * 60 * 1000;
 export const RPC_LIMITER_SLOW_WAIT_LOG_MS = 100;
 export const RPC_LIMITER_WAIT_LOG_THROTTLE_MS = 60000;
 export const RPC_METHOD_COUNTER_LOG_INTERVAL_MS = 300000;
-export const APP_VERSION = '0.2.36';
+export const APP_VERSION = '0.2.37';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -248,6 +256,12 @@ type RuleRuntimeState = {
 };
 
 type PersistedState = Record<string, RuleRuntimeState>;
+
+type CrossInstanceStatus = {
+  faction: string;
+  pendingFleets: string[];
+  updatedAt: string;
+};
 
 type AggressiveRuntimeState = {
   token: number;
@@ -1144,6 +1158,7 @@ export class FleetRentalBot {
   private readonly confirmedAvailabilityWatchdogLastPollAtMsByContract = new Map<string, number>();
   private readonly confirmedAvailabilityTriggeredEpochByRule = new Map<string, number>();
   private readonly confirmedAvailabilityInFlightByRule = new Set<string>();
+  private crossInstanceStatusTimer: NodeJS.Timeout | null = null;
   private readonly confirmedAvailabilityDecodeFailureCache = new Map<string, { expiresAt: number; message: string }>();
   private confirmedAvailabilityWatchdogTimer: NodeJS.Timeout | null = null;
   private confirmedAvailabilityWatchdogInFlight = false;
@@ -1212,6 +1227,15 @@ export class FleetRentalBot {
       }
     }
 
+    // Heartbeat: keep the cross-instance status file fresh so other instances
+    // can see our pending fleets (or confirm we're alive with none).
+    await this.writeCrossInstanceStatus();
+    this.crossInstanceStatusTimer = setInterval(() => {
+      void this.writeCrossInstanceStatus().catch((err: unknown) => {
+        this.logger.warn('Cross-instance status heartbeat write failed:', err);
+      });
+    }, CROSS_INSTANCE_STATUS_HEARTBEAT_MS);
+
     await this.loop();
   }
 
@@ -1239,6 +1263,10 @@ export class FleetRentalBot {
     this.confirmedAvailabilityWatchdogLastPollAtMsByContract.clear();
     this.confirmedAvailabilityTriggeredEpochByRule.clear();
     this.confirmedAvailabilityInFlightByRule.clear();
+    if (this.crossInstanceStatusTimer) {
+      clearInterval(this.crossInstanceStatusTimer);
+      this.crossInstanceStatusTimer = null;
+    }
     this.stopBlockhashRefresh();
     this.successfulRentKeys.clear();
     this.sharedAggressiveExclusiveHolders = 0;
@@ -1649,8 +1677,8 @@ export class FleetRentalBot {
       }
 
       if (snapshot.endsAt && snapshot.endsAt.getTime() + this.config.aggressiveStopAfterEndSeconds * MS_PER_SECOND > Date.now()) {
-        this.scheduleAggressivePhase(rule, snapshot.endsAt);
-        this.scheduleAggressivePreparation(rule, snapshot.endsAt);
+        await this.scheduleAggressivePhase(rule, snapshot.endsAt);
+        await this.scheduleAggressivePreparation(rule, snapshot.endsAt);
       }
 
       const nowMs = Date.now();
@@ -1697,10 +1725,30 @@ export class FleetRentalBot {
     }
   }
 
-  private scheduleAggressivePhase(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
+  private async scheduleAggressivePhase(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
     if (!rule.enabled) return;
     const key = getRuleKey(rule);
     if (this.scheduledAggressiveWindows.has(key) || this.aggressiveIntervalTimers.has(key)) return;
+
+    const crossStatus = await this.isAnyInstancePending();
+    if (crossStatus.pending) {
+      const reason = crossStatus.stale
+        ? `status file for ${crossStatus.blockingFaction} is stale (>${CROSS_INSTANCE_STATUS_TTL_MS / 1000}s old)`
+        : `pending fleets: [${(crossStatus.pendingFleets ?? []).join(', ')}]`;
+      const message = `Aggressive phase skipped for ${rule.fleetName}: another instance (${crossStatus.blockingFaction}) reports ${reason} — program likely in buggy state`;
+      this.logger.info(message);
+      void this.appendLog({
+        event: 'AGGRESSIVE_SKIPPED_CROSS_INSTANCE',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        blockingFaction: crossStatus.blockingFaction,
+        blockingFleets: crossStatus.pendingFleets ?? [],
+        stale: crossStatus.stale ?? false,
+        message,
+      });
+      return;
+    }
 
     const { prepareAtMs, startAtMs, stopAtMs } = calculateAggressiveWindow(
       rentEndsAt.getTime(),
@@ -1735,10 +1783,30 @@ export class FleetRentalBot {
     });
   }
 
-  private scheduleAggressivePreparation(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
+  private async scheduleAggressivePreparation(rule: FleetRentalRuleConfig, rentEndsAt: Date) {
     if (!rule.enabled || this.config.dryRun) return;
     const key = getRuleKey(rule);
     if (this.preparedRentByRule.has(key) || this.preparingRentByRule.has(key)) return;
+
+    const crossStatus = await this.isAnyInstancePending();
+    if (crossStatus.pending) {
+      const reason = crossStatus.stale
+        ? `status file for ${crossStatus.blockingFaction} is stale (>${CROSS_INSTANCE_STATUS_TTL_MS / 1000}s old)`
+        : `pending fleets: [${(crossStatus.pendingFleets ?? []).join(', ')}]`;
+      const message = `Aggressive preparation skipped for ${rule.fleetName}: another instance (${crossStatus.blockingFaction}) reports ${reason}`;
+      this.logger.info(message);
+      void this.appendLog({
+        event: 'AGGRESSIVE_PREP_SKIPPED_CROSS_INSTANCE',
+        label: rule.fleetName,
+        fleetAccount: rule.fleetAccount,
+        rentalContract: rule.rentalContract,
+        blockingFaction: crossStatus.blockingFaction,
+        blockingFleets: crossStatus.pendingFleets ?? [],
+        stale: crossStatus.stale ?? false,
+        message,
+      });
+      return;
+    }
 
     const { prepareAtMs, startAtMs } = calculateAggressiveWindow(
       rentEndsAt.getTime(),
@@ -2783,6 +2851,89 @@ export class FleetRentalBot {
 
   private async saveState() {
     await fs.writeFile(this.stateFilePath, serializePersistedState(this.runtimeByRule.entries()), 'utf8');
+    await this.writeCrossInstanceStatus();
+  }
+
+  private getCrossInstanceStatusPath(faction: string): string {
+    return path.join(CROSS_INSTANCE_STATUS_DIR, `status-${faction}.json`);
+  }
+
+  private async writeCrossInstanceStatus(): Promise<void> {
+    const faction = this.config.instanceName;
+    if (!faction) return;
+    const pendingFleets: string[] = [];
+    for (const rule of this.config.rentalRules) {
+      const key = getRuleKey(rule);
+      const runtime = this.runtimeByRule.get(key);
+      if (runtime?.status === 'pending') {
+        pendingFleets.push(rule.fleetName);
+      }
+    }
+    const status: CrossInstanceStatus = {
+      faction,
+      pendingFleets,
+      updatedAt: new Date().toISOString(),
+    };
+    const filePath = this.getCrossInstanceStatusPath(faction);
+    try {
+      await fs.mkdir(CROSS_INSTANCE_STATUS_DIR, { recursive: true });
+      const tmpPath = `${filePath}.tmp`;
+      await fs.writeFile(tmpPath, JSON.stringify(status), 'utf8');
+      await fs.rename(tmpPath, filePath);
+    } catch (err) {
+      this.logger.warn(`Failed to write cross-instance status to ${filePath}:`, err);
+    }
+  }
+
+  private async readCrossInstanceStatuses(): Promise<CrossInstanceStatus[]> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(CROSS_INSTANCE_STATUS_DIR);
+    } catch {
+      return [];
+    }
+    const ownFaction = this.config.instanceName;
+    const statuses: CrossInstanceStatus[] = [];
+    for (const entry of entries) {
+      if (!entry.startsWith('status-') || !entry.endsWith('.json')) continue;
+      const factionFromName = entry.slice('status-'.length, -'.json'.length);
+      if (factionFromName === ownFaction) continue;
+      const filePath = path.join(CROSS_INSTANCE_STATUS_DIR, entry);
+      try {
+        const raw = await fs.readFile(filePath, 'utf8');
+        const parsed = JSON.parse(raw) as Partial<CrossInstanceStatus>;
+        if (typeof parsed.faction !== 'string' || !Array.isArray(parsed.pendingFleets) || typeof parsed.updatedAt !== 'string') continue;
+        if (parsed.pendingFleets.some((name) => typeof name !== 'string')) continue;
+        statuses.push({
+          faction: parsed.faction,
+          pendingFleets: parsed.pendingFleets as string[],
+          updatedAt: parsed.updatedAt,
+        });
+      } catch (err) {
+        this.logger.warn(`Failed to read cross-instance status from ${filePath}:`, err);
+      }
+    }
+    return statuses;
+  }
+
+  private async isAnyInstancePending(): Promise<{ pending: boolean; blockingFaction?: string; pendingFleets?: string[]; stale?: boolean }> {
+    const now = Date.now();
+    const statuses = await this.readCrossInstanceStatuses();
+    for (const status of statuses) {
+      const updatedAt = Date.parse(status.updatedAt);
+      if (!Number.isFinite(updatedAt)) continue;
+      const ageMs = now - updatedAt;
+      const isStale = ageMs > CROSS_INSTANCE_STATUS_TTL_MS;
+      // Conservative: if the status file is stale, assume the instance is down
+      // and treat it as if it has a pending fleet.
+      if (isStale) {
+        return { pending: true, blockingFaction: status.faction, pendingFleets: [], stale: true };
+      }
+      if (status.pendingFleets.length > 0) {
+        return { pending: true, blockingFaction: status.faction, pendingFleets: status.pendingFleets };
+      }
+    }
+    return { pending: false };
   }
 
   private async appendLog(event: Record<string, unknown>) {
