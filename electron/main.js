@@ -6,10 +6,7 @@ const fsSync = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { Connection, PublicKey } = require('@solana/web3.js');
-const lockfile = require('proper-lockfile');
 const packageJson = require('../package.json');
-const { resolvePaths } = require('rpc_limiter');
-const { readState: readRpcLimiterState, writeStateSync: writeRpcLimiterStateSync, bumpRevision: bumpRpcLimiterRevision } = require('rpc_limiter/dist/state');
 const {
   buildWindowsTransactionalUpdateScript,
   buildWindowsUpdaterLauncher,
@@ -32,10 +29,6 @@ const {
   assertWalletLookupPayload,
   assertWalletSecretPayload,
 } = require('./security-policy');
-const {
-  applyProviderSettings,
-  buildRpcLimiterV2Status,
-} = require('./rpc-limiter-v2-policy');
 const { validateReleaseTree } = require('./release-validation');
 const { canReuseInstalledDependencies } = require('./dependency-reuse-policy');
 const {
@@ -84,7 +77,6 @@ if (_profileName) {
 const TITLE_SUFFIX = _profileName ? ` - ${_profileName}` : '';
 const WINDOW_TITLE = `Fleet Rental Bot${TITLE_SUFFIX}`;
 const APP_DISPLAY_NAME = WINDOW_TITLE;
-const RPC_LIMITER_UPDATED_BY = WINDOW_TITLE;
 
 function getProfileKey(profileName) {
   const normalizedProfile = String(profileName || '').toUpperCase();
@@ -611,72 +603,6 @@ function parseBooleanSetting(value) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
-function getRpcLimiterPaths() {
-  return resolvePaths();
-}
-
-function getRpcLimiterStatus() {
-  const paths = getRpcLimiterPaths();
-  const state = readRpcLimiterState(paths.stateFile, Date.now());
-  return buildRpcLimiterV2Status(state, paths.stateFile, Date.now());
-}
-
-function parsePositiveRate(value, fieldName) {
-  const parsed = Number.parseFloat(String(value ?? '').trim());
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`${fieldName} must be a positive number.`);
-  }
-  return parsed;
-}
-
-async function withRpcLimiterLock(fn) {
-  const paths = getRpcLimiterPaths();
-  if (!fsSync.existsSync(paths.lockfile)) {
-    fsSync.mkdirSync(path.dirname(paths.lockfile), { recursive: true });
-    fsSync.writeFileSync(paths.lockfile, '');
-  }
-
-  const release = await lockfile.lock(paths.lockfile, {
-    stale: 5000,
-    retries: { retries: 50, minTimeout: 5, maxTimeout: 50, factor: 1.2 },
-    realpath: false,
-  });
-  try {
-    return fn(paths);
-  } finally {
-    await release().catch(() => undefined);
-  }
-}
-
-async function sendSettingsToRpcLimiter(config) {
-  if (!String(config.RPC_URL || '').trim()) throw new Error('Main RPC URL is empty.');
-  if (!String(config.RPC_URL_FALLBACK || '').trim()) throw new Error('Fallback RPC URL is empty.');
-  const rpcRequestsPerSecond = parsePositiveRate(config.RPC_REQUESTS_PER_SECOND, 'Requests / sec');
-  const txPerSecond = parsePositiveRate(config.RPC_TX_SEND_RATE_LIMIT_PER_SECOND, 'sendTransaction / sec');
-  const rpcIntervalMs = Math.max(1, Math.round(1000 / rpcRequestsPerSecond));
-  const txIntervalMs = Math.max(1, Math.round(1000 / txPerSecond));
-
-  await withRpcLimiterLock((paths) => {
-    const state = readRpcLimiterState(paths.stateFile, Date.now());
-    state.enabled = true;
-    applyProviderSettings(state, config);
-    state.buckets = state.buckets || {};
-    state.buckets['rpc:shared'] = {
-      ...(state.buckets['rpc:shared'] || { nextSlotMs: 0 }),
-      intervalMs: rpcIntervalMs,
-    };
-    state.buckets['tx:shared'] = {
-      ...(state.buckets['tx:shared'] || { nextSlotMs: 0 }),
-      intervalMs: txIntervalMs,
-    };
-    state.updatedBy = RPC_LIMITER_UPDATED_BY;
-    state.updatedAt = new Date().toISOString();
-    bumpRpcLimiterRevision(state);
-    writeRpcLimiterStateSync(paths.stateFile, state);
-  });
-
-  return getRpcLimiterStatus();
-}
 
 async function loadLocalSettings() {
   const candidatePaths = [getSettingsPath(), DEFAULT_SETTINGS_PATH];
@@ -762,16 +688,7 @@ async function getEffectiveEditableConfig() {
 async function getEffectiveBotInputConfig() {
   const editable = await getEffectiveEditableConfig();
   const localSettings = await loadLocalSettings();
-  const useRpcLimiter = parseBooleanSetting(editable.USE_RPC_LIMITER);
   const botConfig = { ...editable };
-
-  if (useRpcLimiter) {
-    const rpcLimiter = getRpcLimiterStatus();
-    if (!rpcLimiter.currentRpcUrl) {
-      throw new Error('Use RPC Limiter is enabled, but no Current RPC Limiter URL is configured. Send settings to RPC Limiter first.');
-    }
-    botConfig.RPC_URL = rpcLimiter.currentRpcUrl;
-  }
 
   return {
     ...botConfig,
@@ -932,21 +849,6 @@ function getDisplayAccounts(config) {
   };
 }
 
-function redactRpcLimiterStatus(status) {
-  const providers = {};
-  for (const providerId of ['main', 'fallback']) {
-    const provider = status?.providers?.[providerId] || {};
-    providers[providerId] = {
-      ...provider,
-      currentRpcUrl: provider.currentRpcUrl ? REDACTED_VALUE : '',
-    };
-  }
-  return {
-    ...status,
-    providers,
-    currentRpcUrl: status?.currentRpcUrl ? REDACTED_VALUE : '',
-  };
-}
 
 const TRUSTED_RENDERER_URL = pathToFileURL(path.join(__dirname, 'renderer.html')).href;
 
@@ -962,7 +864,6 @@ handleTrusted('settings:get', async () => {
   const localSettings = await loadLocalSettings();
   return {
     config: redactSensitiveSettings(config),
-    rpcLimiter: redactRpcLimiterStatus(getRpcLimiterStatus()),
     displayAccounts: getDisplayAccounts(config),
     rentalRules: normalizeRentalRules(localSettings.RENTAL_RULE_ROWS ?? []),
   };
@@ -981,21 +882,10 @@ handleTrusted('settings:save', async (_event, payload) => {
 
   return {
     settings: redactSensitiveSettings(settings),
-    rpcLimiter: redactRpcLimiterStatus(getRpcLimiterStatus()),
     displayAccounts: getDisplayAccounts(settings),
     restarted,
   };
 });
-
-handleTrusted('rpc-limiter:send-settings', async (_event, payload) => {
-  assertSettingsPayload(payload, EDITABLE_CONFIG_KEYS);
-  const sourceConfig = payload?.config && typeof payload.config === 'object' ? payload.config : payload;
-  const effectiveConfig = await getEffectiveEditableConfig();
-  const mergedConfig = mergeSensitiveInput(effectiveConfig, sourceConfig || {});
-  return redactRpcLimiterStatus(await sendSettingsToRpcLimiter(mergedConfig));
-});
-
-handleTrusted('rpc-limiter:get-status', async () => redactRpcLimiterStatus(getRpcLimiterStatus()));
 
 handleTrusted('bot:start', async () => {
   await startBotFromSettings();

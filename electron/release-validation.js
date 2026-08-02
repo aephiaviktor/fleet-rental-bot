@@ -40,7 +40,6 @@ async function validateReleaseTree(fs, root, options = {}) {
     'electron/renderer.html',
     'electron/secure-settings.js',
     'electron/security-policy.js',
-    'electron/rpc-limiter-v2-policy.js',
     'electron/profile-policy.js',
     'electron/dependency-reuse-policy.js',
   ]) {

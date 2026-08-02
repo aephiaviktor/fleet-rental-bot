@@ -21,12 +21,6 @@ const updateLatestVersionEl = document.getElementById('update-latest-version');
 const updateMessageEl = document.getElementById('update-message');
 const updateConfirmBtn = document.getElementById('update-confirm-btn');
 const updateCancelBtn = document.getElementById('update-cancel-btn');
-const sendRpcLimiterBtn = document.getElementById('send-rpc-limiter-btn');
-const rpcLimiterMainUrlEl = document.getElementById('rpc-limiter-main-url');
-const rpcLimiterFallbackUrlEl = document.getElementById('rpc-limiter-fallback-url');
-const rpcLimiterRoutingModeEl = document.getElementById('rpc-limiter-routing-mode');
-const rpcLimiterStatePathEl = document.getElementById('rpc-limiter-state-path');
-const rpcLimiterUpdatedEl = document.getElementById('rpc-limiter-updated');
 const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
 const tabPanels = Array.from(document.querySelectorAll('.tab-panel'));
 
@@ -368,32 +362,6 @@ function setConfigValues(config) {
   updateAephiaKeyUi();
 }
 
-function renderRpcLimiterStatus(status) {
-  if (!rpcLimiterMainUrlEl || !rpcLimiterFallbackUrlEl || !rpcLimiterStatePathEl || !rpcLimiterUpdatedEl) return;
-  if (!status) {
-    rpcLimiterMainUrlEl.value = '';
-    rpcLimiterFallbackUrlEl.value = '';
-    if (rpcLimiterRoutingModeEl) rpcLimiterRoutingModeEl.textContent = 'Routing: —';
-    rpcLimiterStatePathEl.textContent = '—';
-    rpcLimiterUpdatedEl.textContent = '';
-    return;
-  }
-
-  rpcLimiterMainUrlEl.value = status.providers?.main?.currentRpcUrl || '';
-  rpcLimiterFallbackUrlEl.value = status.providers?.fallback?.currentRpcUrl || '';
-  const cooldownProviders = ['main', 'fallback'].filter((id) => status.providers?.[id]?.inCooldown);
-  if (rpcLimiterRoutingModeEl) {
-    const mode = status.routingMode === 'main-preferred' ? 'main preferred (fleet race active)' : '50/50 round-robin';
-    const cooldown = cooldownProviders.length ? ` · cooldown: ${cooldownProviders.join(', ')}` : '';
-    rpcLimiterRoutingModeEl.textContent = `Routing: ${mode}${cooldown}`;
-  }
-  rpcLimiterStatePathEl.textContent = status.path || '—';
-  const updatedParts = [];
-  if (status.updatedBy) updatedParts.push(`updated by ${status.updatedBy}`);
-  if (status.updatedAt) updatedParts.push(`at ${status.updatedAt}`);
-  rpcLimiterUpdatedEl.textContent = updatedParts.join(' ');
-}
-
 function setDisplayAccounts(displayAccounts) {
   displayHotWalletAddress.textContent = displayAccounts?.hotWalletAddress ?? '—';
   displayHotWalletAddress.title = displayAccounts?.hotWalletAddress ?? '';
@@ -471,7 +439,6 @@ function refreshDisplayAccountsFromForm() {
 async function loadSettings() {
   const settings = await window.botApi.getSettings();
   setConfigValues(settings.config || {});
-  renderRpcLimiterStatus(settings.rpcLimiter);
   setDisplayAccounts(settings.displayAccounts || {});
   rentalRulesBody.innerHTML = '';
   (settings.rentalRules || []).forEach(createRuleRow);
@@ -485,7 +452,6 @@ async function saveSettings() {
   try {
     validateHeliusSenderSettings();
     const result = await window.botApi.saveSettings({ config: getConfigValues(), rentalRules: getRentalRulesFromForm() });
-    if (result?.rpcLimiter) renderRpcLimiterStatus(result.rpcLimiter);
     if (result?.displayAccounts) setDisplayAccounts(result.displayAccounts);
     else refreshDisplayAccountsFromForm();
     appendLog({
@@ -620,20 +586,6 @@ function setupTabs() {
 
 addRuleRowBtn.addEventListener('click', () => createRuleRow());
 saveBtn.addEventListener('click', saveSettings);
-if (sendRpcLimiterBtn) {
-  sendRpcLimiterBtn.addEventListener('click', async () => {
-    sendRpcLimiterBtn.disabled = true;
-    try {
-      const status = await window.botApi.sendSettingsToRpcLimiter({ config: getConfigValues() });
-      renderRpcLimiterStatus(status);
-      appendLog({ timestamp: new Date().toISOString(), level: 'INFO', message: 'Sent settings to RPC Limiter' });
-    } catch (err) {
-      appendLog({ timestamp: new Date().toISOString(), level: 'ERROR', message: err.message || String(err) });
-    } finally {
-      sendRpcLimiterBtn.disabled = false;
-    }
-  });
-}
 startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
   try {

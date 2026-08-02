@@ -38,8 +38,6 @@ contextBridge.exposeInMainWorld('botApi', {
   },
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (payload) => ipcRenderer.invoke('settings:save', payload),
-  sendSettingsToRpcLimiter: (payload) => ipcRenderer.invoke('rpc-limiter:send-settings', payload),
-  getRpcLimiterStatus: () => ipcRenderer.invoke('rpc-limiter:get-status'),
   startBot: () => ipcRenderer.invoke('bot:start'),
   stopBot: () => ipcRenderer.invoke('bot:stop'),
   getBotStatus: () => ipcRenderer.invoke('bot:status'),
