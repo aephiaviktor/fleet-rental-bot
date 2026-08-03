@@ -32,7 +32,7 @@ test('update copy preserves runtime data and dependencies while accepting releas
   assert.equal(shouldCopyUpdatePath('src/bot.ts'), true);
   assert.equal(shouldCopyUpdatePath('electron/main.js'), true);
   assert.equal(shouldCopyUpdatePath('.git/config'), false);
-  assert.equal(shouldCopyUpdatePath('node_modules/rpc_limiter/package.json'), false);
+  assert.equal(shouldCopyUpdatePath('node_modules/example_dependency/package.json'), false);
   assert.equal(shouldCopyUpdatePath('analysis/bot-state.json'), false);
   assert.equal(shouldCopyUpdatePath('MUD-analysis'), false);
   assert.equal(shouldCopyUpdatePath('node_modules\\electron\\package.json'), false);

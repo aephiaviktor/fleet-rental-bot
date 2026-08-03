@@ -1,7 +1,6 @@
 'use strict';
 
 const path = require('node:path');
-const { compareVersions } = require('./update-policy');
 
 async function readJson(fs, filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'));
@@ -49,22 +48,12 @@ async function validateReleaseTree(fs, root, options = {}) {
     throw new Error('Staged release package and lockfile versions do not match.');
   }
 
-  const rpcLimiterLockEntry = packageLock.packages?.['node_modules/rpc_limiter'] || {};
-  const rpcLimiterVersion = String(rpcLimiterLockEntry.version || '');
-  if (!rpcLimiterVersion || compareVersions(rpcLimiterVersion, '0.2.0') < 0) {
-    throw new Error(`Staged release requires RPC Limiter >= 0.2.0; found ${rpcLimiterVersion || 'none'}.`);
-  }
-  const rpcLimiterResolved = String(rpcLimiterLockEntry.resolved || '');
-  if (!/^https:\/\/github\.com\/aephiaviktor\/rpc-limiter\/archive\/[0-9a-f]{40}\.tar\.gz$/i.test(rpcLimiterResolved)) {
-    throw new Error('Staged release requires RPC Limiter from a pinned HTTPS archive.');
-  }
-
   const requiredFiles = Array.isArray(options.requiredFiles) ? options.requiredFiles : getRequiredFiles(options);
   for (const relativePath of requiredFiles) {
     const label = relativePath.includes('electron/dist/') ? 'Electron runtime' : relativePath;
     await requireFile(fs, root, relativePath, label);
   }
-  return { appVersion, rpcLimiterVersion };
+  return { appVersion };
 }
 
 module.exports = { validateReleaseTree, getRequiredFiles };

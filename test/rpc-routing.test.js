@@ -3,35 +3,51 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createFailoverConnection } = require('../dist/bot');
+const { createFailoverConnection, resolveRpcEndpoints } = require('../dist/bot');
 
-function createHarness({ primaryResult = 'primary', primaryError = null, fallbackResult = 'fallback' } = {}) {
+function createHarness({ mainUrl = 'https://main.example', fallbackUrl = 'https://fallback.example', mainResult = 'main', mainError = null, fallbackResult = 'fallback', fallbackError = null } = {}) {
   const calls = [];
-  const waits = [];
   const warnings = [];
-  const outcomes = [];
   const connections = {
-    'https://primary.example': {
-      label: 'primary-property',
+    'https://main.example': {
+      label: 'main-property',
       async getBalance(value) {
-        calls.push(['primary', 'getBalance', value]);
-        if (primaryError) throw primaryError;
-        return primaryResult;
+        calls.push(['main', 'getBalance', value]);
+        if (mainError) throw mainError;
+        return mainResult;
       },
       async sendRawTransaction(value) {
-        calls.push(['primary', 'sendRawTransaction', value]);
-        if (primaryError) throw primaryError;
-        return primaryResult;
+        calls.push(['main', 'sendRawTransaction', value]);
+        if (mainError) throw mainError;
+        return mainResult;
+      },
+      async onAccountChange() {
+        calls.push(['main', 'onAccountChange']);
+        if (mainError) throw mainError;
+        return 11;
+      },
+      async removeAccountChangeListener(id) {
+        calls.push(['main', 'removeAccountChangeListener', id]);
       },
     },
     'https://fallback.example': {
+      label: 'fallback-property',
       async getBalance(value) {
         calls.push(['fallback', 'getBalance', value]);
+        if (fallbackError) throw fallbackError;
         return fallbackResult;
       },
       async sendRawTransaction(value) {
         calls.push(['fallback', 'sendRawTransaction', value]);
+        if (fallbackError) throw fallbackError;
         return fallbackResult;
+      },
+      async onAccountChange() {
+        calls.push(['fallback', 'onAccountChange']);
+        return 22;
+      },
+      async removeAccountChangeListener(id) {
+        calls.push(['fallback', 'removeAccountChangeListener', id]);
       },
     },
   };
@@ -41,73 +57,85 @@ function createHarness({ primaryResult = 'primary', primaryError = null, fallbac
     error() {},
   };
   const connection = createFailoverConnection(
-    'https://primary.example',
-    'https://fallback.example',
+    mainUrl,
+    fallbackUrl,
     logger,
-    () => true,
     'MUD',
     undefined,
-    {
-      createConnection(url) { return connections[url]; },
-      limiter: {
-        async wait(label, bucket, method) { waits.push([label, bucket, method]); },
-        async recordProviderOutcome(provider, outcome) { outcomes.push([provider, outcome]); },
-      },
-    },
+    { createConnection(url) { return connections[url]; } },
   );
-  return { calls, connection, outcomes, waits, warnings };
+  return { calls, connection, warnings };
 }
 
-test('read RPC methods use rpc:shared, return primary, and report provider success', async () => {
-  const { calls, connection, outcomes, waits } = createHarness();
-
-  assert.equal(await connection.getBalance('wallet'), 'primary');
-  assert.deepEqual(calls, [['primary', 'getBalance', 'wallet']]);
-  assert.deepEqual(waits, [['Connection.getBalance()', 'rpc:shared', 'getBalance']]);
-  assert.deepEqual(outcomes, [['main', 'ok']]);
+test('RPC slots resolve both, main-only, fallback-only, and reject neither', () => {
+  assert.deepEqual(resolveRpcEndpoints(' main ', ' fallback '), { primaryUrl: 'main', fallbackUrl: 'fallback', primaryRole: 'main' });
+  assert.deepEqual(resolveRpcEndpoints('main', ''), { primaryUrl: 'main', primaryRole: 'main' });
+  assert.deepEqual(resolveRpcEndpoints('', 'fallback'), { primaryUrl: 'fallback', primaryRole: 'fallback' });
+  assert.deepEqual(resolveRpcEndpoints('same', 'same'), { primaryUrl: 'same', primaryRole: 'main' });
+  assert.throws(() => resolveRpcEndpoints('', ''), /at least one/);
 });
 
-test('sendRawTransaction uses tx:shared and reports primary success', async () => {
-  const { connection, outcomes, waits } = createHarness();
+test('reads use main first and do not round-robin', async () => {
+  const { calls, connection } = createHarness();
 
-  assert.equal(await connection.sendRawTransaction('serialized'), 'primary');
-  assert.deepEqual(waits, [['Connection.sendRawTransaction()', 'tx:shared', 'sendRawTransaction']]);
-  assert.deepEqual(outcomes, [['main', 'ok']]);
+  assert.equal(await connection.getBalance('wallet-1'), 'main');
+  assert.equal(await connection.getBalance('wallet-2'), 'main');
+  assert.deepEqual(calls, [
+    ['main', 'getBalance', 'wallet-1'],
+    ['main', 'getBalance', 'wallet-2'],
+  ]);
 });
 
-test('ambiguous transaction submission errors are reported but never retried through fallback', async () => {
-  const failure = Object.assign(new Error('429 rate limited after submission'), { status: 429 });
-  const { calls, connection, outcomes, waits, warnings } = createHarness({ primaryError: failure });
+test('fallback-only configuration uses fallback as the sole active RPC', async () => {
+  const { calls, connection } = createHarness({ mainUrl: '', fallbackUrl: 'https://fallback.example' });
 
-  await assert.rejects(connection.sendRawTransaction('serialized'), failure);
-  assert.deepEqual(calls, [['primary', 'sendRawTransaction', 'serialized']]);
-  assert.deepEqual(waits, [['Connection.sendRawTransaction()', 'tx:shared', 'sendRawTransaction']]);
-  assert.deepEqual(outcomes, [['main', 'rate_limited']]);
-  assert.equal(warnings.length, 0);
+  assert.equal(connection.label, 'fallback-property');
+  assert.equal(await connection.getBalance('wallet'), 'fallback');
+  assert.deepEqual(calls, [['fallback', 'getBalance', 'wallet']]);
 });
 
-test('read failover reports provider outcomes and retries through the same limiter bucket', async () => {
-  const failure = new Error('primary unavailable');
-  const { calls, connection, outcomes, waits, warnings } = createHarness({ primaryError: failure });
+test('read failure falls back once and warns', async () => {
+  const failure = Object.assign(new Error('429 rate limited'), { status: 429 });
+  const { calls, connection, warnings } = createHarness({ mainError: failure });
 
   assert.equal(await connection.getBalance('wallet'), 'fallback');
   assert.deepEqual(calls, [
-    ['primary', 'getBalance', 'wallet'],
+    ['main', 'getBalance', 'wallet'],
     ['fallback', 'getBalance', 'wallet'],
   ]);
-  assert.deepEqual(waits, [
-    ['Connection.getBalance()', 'rpc:shared', 'getBalance'],
-    ['fallback Connection.getBalance()', 'rpc:shared', 'getBalance'],
-  ]);
-  assert.deepEqual(outcomes, [
-    ['main', 'error'],
-    ['fallback', 'ok'],
-  ]);
   assert.equal(warnings.length, 1);
-  assert.equal(warnings[0][1], failure);
 });
 
-test('non-function properties come from the primary connection', () => {
-  const { connection } = createHarness();
-  assert.equal(connection.label, 'primary-property');
+test('transaction submission is never retried through fallback', async () => {
+  const failure = Object.assign(new Error('submission outcome unknown'), { status: 429 });
+  const { calls, connection, warnings } = createHarness({ mainError: failure });
+
+  await assert.rejects(connection.sendRawTransaction('serialized'), failure);
+  assert.deepEqual(calls, [['main', 'sendRawTransaction', 'serialized']]);
+  assert.equal(warnings.length, 0);
+});
+
+test('fallback failure is returned after a safe read retries both providers', async () => {
+  const mainFailure = new Error('main unavailable');
+  const fallbackFailure = new Error('fallback unavailable');
+  const { calls, connection } = createHarness({ mainError: mainFailure, fallbackError: fallbackFailure });
+
+  await assert.rejects(connection.getBalance('wallet'), fallbackFailure);
+  assert.deepEqual(calls, [
+    ['main', 'getBalance', 'wallet'],
+    ['fallback', 'getBalance', 'wallet'],
+  ]);
+});
+
+test('fallback-owned account subscriptions are removed from the same connection', async () => {
+  const { calls, connection } = createHarness({ mainError: new Error('main websocket unavailable') });
+
+  const id = await connection.onAccountChange('account', () => undefined);
+  assert.equal(id, 22);
+  await connection.removeAccountChangeListener(id);
+  assert.deepEqual(calls, [
+    ['main', 'onAccountChange'],
+    ['fallback', 'onAccountChange'],
+    ['fallback', 'removeAccountChangeListener', 22],
+  ]);
 });

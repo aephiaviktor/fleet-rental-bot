@@ -5,8 +5,8 @@ const path = require('node:path');
 const { validateReleaseTree } = require('./release-validation');
 
 validateReleaseTree(fs, path.resolve(__dirname, '..'), { platform: process.platform })
-  .then(({ appVersion, rpcLimiterVersion }) => {
-    process.stdout.write(`Fleet Rental Bot ${appVersion}; RPC Limiter ${rpcLimiterVersion}; release tree valid.\n`);
+  .then(({ appVersion }) => {
+    process.stdout.write(`Fleet Rental Bot ${appVersion}; release tree valid.\n`);
   })
   .catch((error) => {
     process.stderr.write(`${error?.message || String(error)}\n`);

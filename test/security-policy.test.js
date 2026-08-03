@@ -61,6 +61,19 @@ test('renderer settings are redacted and placeholder saves preserve existing sec
   );
 });
 
+test('main and fallback RPC slots can be cleared independently while placeholders preserve them', () => {
+  const current = { RPC_URL: 'https://main.example', RPC_URL_FALLBACK: 'https://fallback.example' };
+
+  assert.deepEqual(
+    mergeSensitiveInput(current, { RPC_URL: '', RPC_URL_FALLBACK: SENSITIVE_PLACEHOLDER }),
+    { RPC_URL: '', RPC_URL_FALLBACK: 'https://fallback.example' },
+  );
+  assert.deepEqual(
+    mergeSensitiveInput(current, { RPC_URL: SENSITIVE_PLACEHOLDER, RPC_URL_FALLBACK: '' }),
+    { RPC_URL: 'https://main.example', RPC_URL_FALLBACK: '' },
+  );
+});
+
 test('encryption refuses to persist a non-empty secret when safe storage is unavailable', () => {
   assert.throws(
     () => encryptSensitiveSettings({ HOT_WALLET_SECRET: 'secret' }, { isEncryptionAvailable: () => false }),

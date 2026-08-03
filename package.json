@@ -1,6 +1,6 @@
 {
   "name": "fleet-rental-bot",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "private": true,
   "main": "electron/main.js",
   "type": "commonjs",
@@ -24,8 +24,7 @@
     "@staratlas/sage": "^1.8.6",
     "bn.js": "^5.2.1",
     "bs58": "^6.0.0",
-    "electron": "^42.1.0",
-    "rpc_limiter": "https://github.com/aephiaviktor/rpc-limiter/archive/b2db0cd36ff6f8b632dbb055d684dc6c34b735e9.tar.gz"
+    "electron": "^42.1.0"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6",

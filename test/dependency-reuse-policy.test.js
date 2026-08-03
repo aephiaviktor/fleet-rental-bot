@@ -14,11 +14,11 @@ function lock(version, overrides = {}) {
         name: 'fleet-rental-bot',
         version,
         hasInstallScript: version === '0.2.33',
-        dependencies: { electron: '^42.1.0', rpc_limiter: 'https://example/rpc.tar.gz' },
+        dependencies: { electron: '^42.1.0', example_dependency: 'https://example/dependency.tar.gz' },
         devDependencies: { typescript: '^5.9.3' },
       },
       'node_modules/electron': { version: '42.1.0', resolved: 'https://registry/electron.tgz', integrity: 'electron-integrity' },
-      'node_modules/rpc_limiter': { version: '0.2.0', resolved: 'https://example/rpc.tar.gz', integrity: 'rpc-integrity' },
+      'node_modules/example_dependency': { version: '1.0.0', resolved: 'https://example/dependency.tar.gz', integrity: 'dependency-integrity' },
       'node_modules/typescript': { version: '5.9.3', resolved: 'https://registry/typescript.tgz', integrity: 'ts-integrity' },
       ...overrides,
     },
@@ -59,7 +59,7 @@ test('dependency reuse rejects direct or transitive dependency changes', () => {
   assert.equal(canReuseInstalledDependencies(lock('0.2.33'), transitiveChange), false);
 
   const sourceChange = lock('0.2.40');
-  sourceChange.packages['node_modules/rpc_limiter'].resolved = 'https://example/new-rpc.tar.gz';
+  sourceChange.packages['node_modules/example_dependency'].resolved = 'https://example/new-dependency.tar.gz';
   assert.equal(canReuseInstalledDependencies(lock('0.2.39'), sourceChange), false);
 
   const integrityChange = lock('0.2.40');

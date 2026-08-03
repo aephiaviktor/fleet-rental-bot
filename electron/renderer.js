@@ -36,9 +36,6 @@ const CONFIG_KEYS = [
   'AGGRESSIVE_START_BEFORE_END_SECONDS',
   'AGGRESSIVE_STOP_AFTER_END_SECONDS',
   'AGGRESSIVE_SEND_INTERVAL_MS',
-  'RPC_REQUESTS_PER_SECOND',
-  'RPC_TX_SEND_RATE_LIMIT_PER_SECOND',
-  'USE_RPC_LIMITER',
   'TRANSACTION_PRIORITY_FEE_MICROLAMPORTS',
   'HELIUS_PRIORITY_FEE_MAX_MICROLAMPORTS',
   'USE_HELIUS_SENDER',
@@ -388,7 +385,6 @@ function getConfigValues() {
     config[key] = input.type === 'checkbox' ? String(input.checked) : input.value;
   }
   const useSender = form.elements['USE_HELIUS_SENDER']?.checked;
-  config.USE_RPC_LIMITER = 'false';
   config.USE_NORMAL_TXS = String(!useSender);
   config.USE_SWQOS = 'false';
   config.USE_HELIUS_SENDER = String(Boolean(useSender));

@@ -27,7 +27,6 @@ test('editable defaults preserve the current safe startup policy', () => {
 
   assert.equal(config.RPC_URL, 'https://api.mainnet-beta.solana.com');
   assert.equal(config.RPC_URL_FALLBACK, '');
-  assert.equal(config.USE_RPC_LIMITER, 'false');
   assert.equal(config.USE_HELIUS_SENDER, 'false');
   assert.equal(config.DRY_RUN, 'true');
 });
@@ -67,28 +66,30 @@ test('legacy durationHours is interpreted by the current parser and the 24-day c
   assert.throws(() => parseRentalRule({ ...validRule, durationDays: '25' }), /durationDays must be <= 24/);
 });
 
-test('bot config preserves primary/fallback RPC inputs and limiter bucket rates', () => {
-  const config = buildBotConfig({
+test('bot config supports independent main and fallback RPC slots', () => {
+  const base = {
     HOT_WALLET_SECRET: 'characterization-only',
     SRSLY_PROGRAM_ID: DEFAULT_SRSLY_PROGRAM_ID,
     OWNER_WALLET: ATLAS_MINT,
     OWNER_PROFILE: RENTAL_FEE_WALLET,
-    RPC_URL: 'https://primary.example',
-    RPC_URL_FALLBACK: 'https://fallback.example',
-    USE_RPC_LIMITER: 'true',
-    RPC_REQUESTS_PER_SECOND: '8',
-    RPC_TX_SEND_RATE_LIMIT_PER_SECOND: '2',
     DRY_RUN: 'false',
     rentalRules: [validRule],
-  });
+  };
 
-  assert.equal(config.rpcUrl, 'https://primary.example');
-  assert.equal(config.rpcUrlFallback, 'https://fallback.example');
-  assert.equal(config.useRpcLimiter, true);
-  assert.equal(config.rpcRequestsPerSecond, 8);
-  assert.equal(config.rpcTxSendRateLimitPerSecond, 2);
-  assert.equal(config.dryRun, false);
-  assert.equal(config.rentalRules.length, 1);
+  const both = buildBotConfig({ ...base, RPC_URL: ' https://main.example ', RPC_URL_FALLBACK: ' https://fallback.example ' });
+  assert.equal(both.rpcUrl, 'https://main.example');
+  assert.equal(both.rpcUrlFallback, 'https://fallback.example');
+
+  const fallbackOnly = buildBotConfig({ ...base, RPC_URL: '', RPC_URL_FALLBACK: 'https://fallback.example' });
+  assert.equal(fallbackOnly.rpcUrl, 'https://fallback.example');
+  assert.equal(fallbackOnly.rpcUrlFallback, undefined);
+
+  assert.throws(
+    () => buildBotConfig({ ...base, RPC_URL: '', RPC_URL_FALLBACK: '' }),
+    /at least one of RPC_URL or RPC_URL_FALLBACK/,
+  );
+  assert.equal(both.dryRun, false);
+  assert.equal(both.rentalRules.length, 1);
 });
 
 test('Helius Sender currently disables normal transaction submission and enforces its minimum tip', () => {

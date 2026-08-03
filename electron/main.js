@@ -5,7 +5,7 @@ const fs = require('fs/promises');
 const fsSync = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const { Connection, PublicKey } = require('@solana/web3.js');
+const { PublicKey } = require('@solana/web3.js');
 const packageJson = require('../package.json');
 const {
   buildWindowsTransactionalUpdateScript,
@@ -124,6 +124,7 @@ const {
   buildBotConfig,
   getEditableConfigFromEnv,
   getHotWalletAddressFromSecret,
+  createFailoverConnection,
   resolveRentalRuleDetails,
   EDITABLE_CONFIG_KEYS,
 } = require('../dist/bot');
@@ -658,7 +659,10 @@ async function saveLocalSettings(payload) {
     }
   }
 
-  filtered.USE_RPC_LIMITER = 'false';
+  // Remove retired limiter settings from legacy profile files on the next save.
+  delete filtered.USE_RPC_LIMITER;
+  delete filtered.RPC_REQUESTS_PER_SECOND;
+  delete filtered.RPC_TX_SEND_RATE_LIMIT_PER_SECOND;
 
   filtered.RENTAL_RULE_ROWS = normalizeRentalRules(payload?.rentalRules ?? current.RENTAL_RULE_ROWS ?? []);
   await writeJsonAtomic(fs, getSettingsPath(), encryptSensitiveSettings(filtered, safeStorage));
@@ -701,8 +705,6 @@ async function getEffectiveEditableConfig() {
       config[key] = value;
     }
   }
-  config.USE_RPC_LIMITER = 'false';
-
   return config;
 }
 
@@ -966,11 +968,12 @@ handleTrusted('wallet:lookup', async (_event, payload) => {
   console.error('[wallet:lookup] hotWalletPublicKey =', hotWalletPublicKey);
   try {
     const config = await getEffectiveBotInputConfig();
-    console.error('[wallet:lookup] RPC_URL =', config.RPC_URL);
-    const connection = new Connection(config.RPC_URL || 'https://api.mainnet-beta.solana.com', {
-      commitment: 'confirmed',
-      disableRetryOnRateLimit: true,
-    });
+    const connection = createFailoverConnection(
+      config.RPC_URL,
+      config.RPC_URL_FALLBACK,
+      console,
+      `${_instanceName || 'default'}:wallet-lookup`,
+    );
     const walletPK = new PublicKey(hotWalletPublicKey);
     const PLAYER_PROFILE_PROGRAM_ID = 'pprofELXjL5Kck7Jn5hCpwAL82DpTkSYBENzahVtbc9';
     // Profile PDA: seeds = ['profile', wallet_pubkey]
@@ -1012,6 +1015,7 @@ handleTrusted('rules:resolve', async (_event, payload) => {
   const config = await getEffectiveBotInputConfig();
   return resolveRentalRuleDetails({
     rpcUrl: config.RPC_URL,
+    rpcUrlFallback: config.RPC_URL_FALLBACK,
     srslyProgramId: config.SRSLY_PROGRAM_ID,
     fleetAccount: payload?.fleetAccount,
     rentalContract: payload?.rentalContract,
