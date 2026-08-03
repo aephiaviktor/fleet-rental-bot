@@ -49,6 +49,10 @@ test('transactional updater waits, swaps, preserves runtime data, restarts, and 
   });
 
   assert.ok(script.indexOf('Wait-Process') < script.indexOf('Move-Item -Path $appRoot'));
+  assert.match(script, /Waiting for scheduled task to become Ready/);
+  assert.match(script, /Get-ScheduledTask -TaskName \$taskName/);
+  assert.match(script, /Timed out waiting for scheduled task/);
+  assert.ok(script.indexOf('Scheduled task is Ready') < script.indexOf('Move-Item -Path $appRoot'));
   assert.match(script, /\.update-release\.json/);
   assert.match(script, /ConvertFrom-Json/);
   assert.match(script, /\$reuseDependencies/);
@@ -63,6 +67,7 @@ test('transactional updater waits, swaps, preserves runtime data, restarts, and 
   assert.match(script, /Move-Item -Path \$backupRoot -Destination \$appRoot/);
   assert.match(script, /schtasks\.exe \/Run \/TN \$taskName/);
   assert.match(script, /Waiting for the updated application readiness marker/);
+  assert.match(script, /AddSeconds\(180\)/);
   assert.match(script, /schtasks\.exe \/End \/TN \$taskName/);
   assert.match(script, /ExecutablePath -like/);
   assert.match(script, /\$rollbackDeadline = \(Get-Date\)\.AddSeconds\(30\)/);
